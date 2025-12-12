@@ -1,13 +1,13 @@
 """MCP Server for Italian weather using Open-Meteo API."""
-
+import shared
 from typing import Any
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.session import ServerSession
-from shared.logging_config import get_logger
-from .wita_api_client import GeocodingClient, OpenMeteoClient
-from .wita_schemas import WeatherForecast, LocationInfo
+# from shared.logging_config import get_logger
+from servers.weather_ita.wita_api_client import GeocodingClient, OpenMeteoClient
+from servers.weather_ita.wita_schemas import WeatherForecast, LocationInfo
 
-logger = get_logger(__name__)
+logger = shared.logging_config.get_logger(__name__)
 
 # Create MCP server
 mcp = FastMCP(
@@ -190,3 +190,28 @@ class WeatherItalyServer:
         """Get the FastMCP server instance."""
         return self.mcp
     
+if __name__ == "__main__":
+    """
+    Run server in stdio mode for MCP host connection.
+    
+    This allows the MCP host to:
+    1. Connect via stdio
+    2. Discover tools with list_tools()
+    3. Discover resources with list_resources()
+    4. Call tools and read resources
+    """
+    import asyncio
+    
+    async def run_server():
+        """Run the MCP server in stdio mode."""
+        server = WeatherItalyServer()
+        await server.start()
+        
+        # Run FastMCP server in stdio mode
+        # This is what the MCP host connects to
+        await mcp.run(transport="stdio")
+        
+        await server.stop()
+    
+    # Run the server
+    asyncio.run(run_server())

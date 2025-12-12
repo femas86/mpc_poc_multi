@@ -1,11 +1,9 @@
-
-
 from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.session import ServerSession
 from shared.logging_config import get_logger
-from .wus_api_client import WeatherGovClient, GeoCodingClient
-from .wus_schemas import WeatherForecastUSA
+from servers.weather_us.wus_api_client import WeatherGovClient, GeoCodingClient
+from servers.weather_us.wus_schemas import WeatherForecastUSA, WeatherAlert, WeatherPeriod, GridPoint, ObservationStation
 
 logger = get_logger(__name__)
 
@@ -303,3 +301,19 @@ class WeatherUSAServer:
     def get_mcp_server(self) -> FastMCP:
         """Get the FastMCP server instance."""
         return self.mcp
+
+if __name__ == "__main__":
+    """Run server in stdio mode for MCP host connection."""
+    import asyncio
+    
+    async def run_server():
+        """Run the MCP server in stdio mode."""
+        server = WeatherUSAServer()
+        await server.start()
+        
+        # Run FastMCP server in stdio mode
+        await mcp.run(transport="stdio")
+        
+        await server.stop()
+    
+    asyncio.run(run_server())

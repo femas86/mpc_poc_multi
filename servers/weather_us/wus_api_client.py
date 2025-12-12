@@ -5,11 +5,10 @@ import asyncio
 from functools import lru_cache
 from typing import Optional, Dict
 from datetime import datetime
-from config.settings import get_settings
+from config.settings import Settings, get_settings
 from shared.logging_config import get_logger
 from shared.utils import retry_async
-from config.settings import Settings
-from .wus_schemas import (
+from servers.weather_us.wus_schemas import (
     GridPoint,
     WeatherForecastUSA,
     WeatherPeriod,
@@ -19,12 +18,14 @@ from .wus_schemas import (
 )
 
 logger = get_logger(__name__)
+settings= Settings()
+print(settings.weathergov_user_agent)
 
 class GeoCodingClient:
 
     def __init__(self):
         self.headers = {
-            'User-Agent': Settings.weathergov_user_agent,
+            'User-Agent': settings.weathergov_user_agent,
             'Accept': 'application/json'
         }
         self.client = httpx.AsyncClient(headers=self.headers)
@@ -73,12 +74,11 @@ class WeatherGovClient:
     BASE_URL = "https://api.weather.gov"
     
     def __init__(self, user_agent: Optional[str] = None, timeout: Optional[int] = None):
-        settings = get_settings()
         self.user_agent = user_agent or settings.weathergov_user_agent
         self.BASE_URL = settings.weathergov_base_url or self.BASE_URL
         self.timeout = timeout or settings.weathergov_timeout
         self.headers = {
-            'User-Agent': get_settings().weathergov_user_agent,
+            'User-Agent': self.user_agent,
             'Accept': 'application/json'
         }
         self.client = httpx.AsyncClient(

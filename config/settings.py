@@ -7,7 +7,6 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -38,7 +37,6 @@ class Settings(BaseSettings):
 
     # Weather.gov Configuration
     weathergov_base_url : str = Field(
-        alias = "NWS_API_BASE",
         default="https://api.weather.gov"
         )
     weathergov_user_agent: str = Field(
@@ -91,4 +89,4 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """Get cached settings instance."""
-    return Settings()
+    return Settings

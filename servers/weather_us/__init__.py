@@ -1,6 +1,6 @@
-from .server_us import WeatherUSAServer
-from .wus_api_client import WeatherGovClient, NWSGeocodingClient
-from .wus_schemas import (
+from servers.weather_us.server_us import WeatherUSAServer
+from servers.weather_us.wus_api_client import WeatherGovClient, GeoCodingClient
+from servers.weather_us.wus_schemas import (
     WeatherForecastUSA,
     WeatherPeriod,
     WeatherAlert,
@@ -11,7 +11,7 @@ from .wus_schemas import (
 __all__ = [
     "WeatherUSAServer",
     "WeatherGovClient",
-    "NWSGeocodingClient",
+    "GeoCodingClient",
     "WeatherForecastUSA",
     "WeatherPeriod",
     "WeatherAlert",

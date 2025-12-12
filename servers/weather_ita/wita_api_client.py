@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from config.settings import get_settings
 from shared.logging_config import get_logger
 from shared.utils import retry_async
-from .wita_schemas import (
+from servers.weather_ita.wita_schemas import (
     LocationInfo,
     WeatherCurrent,
     WeatherForecast,
