@@ -10,8 +10,42 @@ from pydantic import BaseModel, Field
 from config.settings import get_settings
 from shared.logging_config import get_logger
 
+# import os
+# from collections.abc import AsyncIterator
+# from contextlib import asynccontextmanager
+# from dataclasses import dataclass
+
+# from neo4j import AsyncGraphDatabase, AsyncDriver
+
+
 logger = get_logger(__name__)
 
+
+# @dataclass
+# class AppContext:
+#     """Application context with Neo4j driver."""
+#     driver: AsyncDriver
+#     database: str
+
+# @asynccontextmanager
+# async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+#     """Manage Neo4j driver lifecycle."""
+
+#     # Read connection details from environment
+#     uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+#     username = os.getenv("NEO4J_USER", "neo4j")
+#     password = os.getenv("NEO4J_PASSWORD", "password")
+#     database = os.getenv("NEO4J_DATABASE", "neo4j")
+
+#     # Initialize driver on startup
+#     driver = AsyncGraphDatabase.driver(uri, auth=(username, password))
+
+#     try:
+#         # Yield context with driver
+#         yield AppContext(driver=driver, database=database)
+#     finally:
+#         # Close driver on shutdown
+#         await driver.close()
 
 class Message(BaseModel):
     """Individual message in conversation."""

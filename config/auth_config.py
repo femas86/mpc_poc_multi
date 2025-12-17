@@ -58,8 +58,6 @@ class AuthConfig:
         Returns:
             Encrypted token string
         """
-        import json
-
         payload = token_data.model_dump_json()
         encrypted = self._fernet.encrypt(payload.encode())
         return encrypted.decode()

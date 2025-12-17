@@ -19,7 +19,7 @@ from servers.weather_us.wus_schemas import (
 
 logger = get_logger(__name__)
 settings= Settings()
-print(settings.weathergov_user_agent)
+# print(settings.weathergov_user_agent)
 
 class GeoCodingClient:
 

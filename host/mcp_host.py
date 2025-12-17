@@ -11,6 +11,8 @@ Features:
 
 import asyncio
 import json
+import os
+from pathlib import Path
 from typing import Any, Optional
 from datetime import datetime
 
@@ -19,35 +21,16 @@ from mcp.client.stdio import stdio_client
 
 from shared.logging_config import get_logger
 from config.settings import get_settings
-from .ollama_client import OllamaClient, OllamaMessage
-from .context_manager import ContextManager
-from .session_manager import SessionManager
-from .auth_middleware import AuthMiddleware
+from host.ollama_client import OllamaClient, OllamaMessage
+from host.context_manager import ContextManager
+from host.session_manager import SessionManager
+from host.auth_middleware import AuthMiddleware
+from host.health_checker import HealthChecker
+from config.server_config import ServerConfig
+from host.server_discovery import ServerDiscovery, ServerMetadata
+
 
 logger = get_logger(__name__)
-
-
-class ServerConfig:
-    """Configuration for MCP server."""
-    
-    def __init__(
-        self,
-        name: str,
-        command: str,
-        args: list[str],
-        env: Optional[dict[str, str]] = None,
-        # available_tools: Optional[list[str]] = None,
-        # available_resources: Optional[list[str]] = None,    
-        description: str = "",
-    ):
-        self.name = name
-        self.command = command
-        self.args = args
-        self.env = env or {}
-        self.description = description
-        # self.available_tools = available_tools or []
-        # self.available_resources = available_resources or []
-
 
 # class MCPClientWrapper:
     # """Wrapper for MCP client session with metadata."""
@@ -120,7 +103,6 @@ class DiscoveredTool:
         self.required_params = input_schema.get("required", [])
         self.properties = input_schema.get("properties", {})
 
-
 class DiscoveredResource:
     """Resource discovered from MCP server."""
     
@@ -176,6 +158,7 @@ class MCPHost:
         context_manager: Optional[ContextManager] = None,
         ollama_client: Optional[OllamaClient] = None,
         auth_middleware: Optional[AuthMiddleware] = None,
+        health_checker: Optional[HealthChecker] = None,
     ):
         """Initialize MCP Host."""
         self.settings = get_settings()
@@ -185,6 +168,7 @@ class MCPHost:
         self.context_manager = context_manager or ContextManager()
         self.ollama_client = ollama_client or OllamaClient()
         self.auth_middleware = auth_middleware
+        self.health_checker = health_checker or HealthChecker(self)
         
         # MCP clients
         # self.clients: dict[str, MCPClientWrapper] = {}
@@ -288,12 +272,82 @@ Observation: The weather in Rome today is 75°F and sunny. The weather in San Fr
 Thought: I have the weather data for both cities. Now I need to compare the temperatures and provide the answer.
 """
     
+    def auto_register_servers(self, servers_dir: Optional[Path] = None):
+        """
+        Automatically discover and register MCP servers.
+        
+        Args:
+            servers_dir: Path to servers directory (optional)
+        """
+        logger.info("starting_auto_discovery")
+        
+        # Discover servers
+        discovery = ServerDiscovery(servers_dir)
+        discovered = discovery.discover_servers()
+        
+        if not discovered:
+            logger.warning("no_servers_discovered")
+            return
+        
+        # Validate and register
+        registered_count = 0
+        skipped_count = 0
+        
+        for metadata in discovered:
+            is_valid, error_msg = discovery.validate_server(metadata)
+            
+            if not is_valid:
+                logger.warning(
+                    "server_skipped",
+                    name=metadata.name,
+                    reason=error_msg,
+                )
+                skipped_count += 1
+                continue
+            
+            # Register server
+            try:
+                config = ServerConfig(
+                    name=metadata.name,
+                    command="python",
+                    args=[str(metadata.path.absolute())],
+                    env={"PYTHONPATH": str(metadata.path.parent.parent)},
+                    description=metadata.description,
+                )
+                
+                self.register_server(config)
+                registered_count += 1
+                
+                logger.info(
+                    "server_auto_registered",
+                    name=metadata.name,
+                    description=metadata.description,
+                )
+                
+            except Exception as e:
+                logger.error(
+                    "server_registration_failed",
+                    name=metadata.name,
+                    error=str(e),
+                )
+                skipped_count += 1
+        
+        logger.info(
+            "auto_discovery_complete",
+            registered=registered_count,
+            skipped=skipped_count,
+            total=len(discovered),
+        )
+
     async def start(self):
         """Start the MCP host and all components."""
         logger.info("mcp_host_starting")
         
         # Start session manager
         await self.session_manager.start()
+
+        # Avviare un task periodico per i health check
+        asyncio.create_task(self._health_check_loop())
         
         # Initialize configured MCP servers
         # await self._initialize_servers()
@@ -307,7 +361,11 @@ Thought: I have the weather data for both cities. Now I need to compare the temp
                     resources_discovered=len(self.discovered_resources),
                     )
 
-    
+    async def _health_check_loop(self):
+        while True:
+            await asyncio.sleep(300) # Ogni 5 minuti
+            await self.health_checker.check_all_servers()
+
     async def stop(self):
         """Stop the MCP host and cleanup."""
         logger.info("mcp_host_stopping")
@@ -330,6 +388,9 @@ Thought: I have the weather data for both cities. Now I need to compare the temp
     
     def register_server(self, config: ServerConfig):
         """Register an MCP server configuration."""
+        if not isinstance(config, ServerConfig):
+            logger.error("invalid_server_config_type", config=vars(config))
+            raise TypeError("Server configuration must be a ServerConfig instance.")
         self.server_configs.append(config)
         logger.info("server_registered", name=config.name)
     
@@ -673,10 +734,25 @@ Remember: Start with "Thought:" and then specify Action and Action Input."""
                 return json.dumps(result, indent=2)
             return str(result)
             
+        # except Exception as e:
+        #     logger.error("action_execution_error", error=str(e), action=action)
+        #     return f"Error executing action: {str(e)}"
+        # except self.mcp.errors.McpError as e:
+        #     logger.error("mcp_protocol_error", server=tool.server_name, error=str(e))
+        #     return f"Error (MCP Protocol): {e.message}"
+        except ConnectionRefusedError as e: # O simili, a seconda del client
+            logger.error("server_connection_refused", server=tool.server_name, error=str(e))
+            return f"Error: Could not connect to server {tool.server_name}"
+        except asyncio.TimeoutError as e:
+            logger.error("server_timeout", serveer=tool.server_name, error=str(e))
+            return f"Error: Server {tool.server_name} timed out"
+        except json.JSONDecodeError as e:
+            logger.error("server_response_json_error", server=tool.server_name, response_text=str(result), error=str(e))
+            return f"Error: Invalid JSON response from {tool.server_name}"
         except Exception as e:
-            logger.error("action_execution_error", error=str(e), action=action)
-            return f"Error executing action: {str(e)}"
-    
+            logger.error("unexpected_tool_execution_error", tool=action, server=tool.server_name, error=str(e))
+            return f"Error: An unexpected error occurred while executing {action} on {tool.server_name}"
+
     async def _call_mcp_tool(
         self,
         server_config: ServerConfig,

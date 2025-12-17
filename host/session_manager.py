@@ -140,6 +140,28 @@ class SessionManager:
         age = (datetime.now() - session.last_accessed).total_seconds()
         return age <= self.max_age
 
+    async def refresh_session(self, session_id: str) -> Optional[str]:
+        """Refresh an existing session token."""
+        session_info = await self.get_session(session_id)
+        if not session_info:
+            return None
+        
+        # Creare un nuovo token con gli stessi scope e metadata
+        new_token = self.auth_config.create_access_token(
+            user_id=session_info.user_id,
+            session_id=session_info.session_id,
+            scopes=session_info.token_data.scopes, # Mantenere gli scope
+        )
+        
+        # Aggiornare il token_data nella sessione
+        new_token_data = self.auth_config.verify_token(new_token)
+        if new_token_data:
+            session_info.token_data = new_token_data
+            session_info.updated_at = datetime.now()
+            logger.info("session_token_refreshed", session_id=session_id)
+            return new_token
+        return None
+    
     async def _cleanup_loop(self) -> None:
         """Background cleanup task."""
         while self._running:

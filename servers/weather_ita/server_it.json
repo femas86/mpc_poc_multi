@@ -1,0 +1,21 @@
+{
+  "name": "weather_italy",
+  "description": "Italian weather forecasts using Open-Meteo API and geocoding",
+  "enabled": true,
+  "version": "1.0.0",
+  "requires_config": [],
+  "capabilities": {
+    "tools": [
+      "search_italian_city",
+      "get_weather_italy"
+    ],
+    "resources": [
+      "weather://italy/current/{city}"
+    ]
+  },
+  "metadata": {
+    "author": "Federico Mastrorilli",
+    "category": "weather",
+    "tags": ["weather", "italy", "open-meteo"]
+  }
+}

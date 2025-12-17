@@ -1,0 +1,28 @@
+{
+  "name": "neo4j",
+  "description": "Neo4j graph database with semantic querying and recommendations",
+  "enabled": true,
+  "version": "1.0.0",
+  "requires_config": [
+    "NEO4J_URI",
+    "NEO4J_USER",
+    "NEO4J_PASSWORD"
+  ],
+  "capabilities": {
+    "tools": [
+      "execute_cypher_query",
+      "create_node",
+      "create_relationship",
+      "find_nodes",
+      "semantic_query"
+    ],
+    "resources": [
+      "graph://schema"
+    ]
+  },
+  "metadata": {
+    "author": "Federico Mastrorilli",
+    "category": "database",
+    "tags": ["neo4j", "graph", "database"]
+  }
+}

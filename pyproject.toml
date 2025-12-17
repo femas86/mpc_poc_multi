@@ -8,19 +8,55 @@ dependencies = [
     "mcp>=1.11.0",
     "ollama>=0.6.1",
     "python-dotenv>=1.1.1",
-    "pydantic>=2.1.1"
+    "pydantic>=2.1.1",
+    "aiohttp>=3.9.0",
+    "httpx>=0.27.0",
+    "cryptography>=41.0.0",
+    "python-dateutil>=2.8.2",
+    "pytz>=2023.3",
+    "structlog>=24.1.0",
+    "neo4j>=5.14.0",
+    "gradio>=6.1.0",
 ]
 
-[tool.poetry]
-name = "mpc_poc_multi"
-version = "0.1.0"
-description = "MPC package with ReAct, Ollama local LLM, MPC host, clients and servers for meteo forecasts in italy and US"
-authors = ["femas86 <federico.mastrorilli@activadigital.it>"]
-readme = "README.md"
-
-[tool.poetry.dependencies]
-
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.12.0",
+    "ruff>=0.1.8",
+    "mypy>=1.7.0",
+]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.black]
+line-length = 100
+target-version = ['py312']
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["mpc_poc_multi",
+"mpc_poc_multi/config", 
+"mpc_poc_multi/host",
+"mpc_poc_multi/servers",
+"mpc_poc_multi/shared",
+"mpc_poc_multi/main.py",
+"mpc_poc_multi/README.md"]
+

@@ -1,0 +1,22 @@
+{
+  "name": "weather_us",
+  "description": "US weather forecasts using Weather.gov API and OpenStreetMap geocoding",
+  "enabled": true,
+  "version": "1.0.0",
+  "requires_config": [],
+  "capabilities": {
+    "tools": [
+      "search_us_location",
+      "get_weather_usa",
+      "get_current_conditions_usa"
+    ],
+    "resources": [
+      "weather://usa/forecast/{location}"
+    ]
+  },
+  "metadata": {
+    "author": "Federico Mastrorilli",
+    "category": "weather",
+    "tags": ["weather", "US", "weather.gov", "openstreetmap"]
+  }
+}
