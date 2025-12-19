@@ -386,7 +386,7 @@ async def initialize_host() -> tuple[MCPHost, str, str]:
     session_manager = SessionManager(auth_config=auth_config)
     context_manager = ContextManager()
     ollama_client = OllamaClient()
-    auth_middleware = AuthMiddleware(session_manager=session_manager)
+    auth_middleware = AuthMiddleware(app=None, auth_config=auth_config, session_manager=session_manager)
     
     # Create MCP Host
     host = MCPHost(

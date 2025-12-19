@@ -157,7 +157,7 @@ class WebInterface:
     
     def get_discovered_tools(self) -> str:
         """Get list of discovered tools."""
-        if not self.host or not self.host.discovered_tools:
+        if not self.host: #or not self.host.discovered_tools:
             return "No tools discovered yet. Start the host first."
         
         lines = ["# Discovered Tools\n"]

@@ -1,11 +1,12 @@
 from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.session import ServerSession
-from shared.logging_config import get_logger
+import shared
+# from shared.logging_config import get_logger
 from servers.weather_us.wus_api_client import WeatherGovClient, GeoCodingClient
 from servers.weather_us.wus_schemas import WeatherForecastUSA, WeatherAlert, WeatherPeriod, GridPoint, ObservationStation
 
-logger = get_logger(__name__)
+logger = shared.logging_config.get_logger(__name__)
 
 # Create MCP server
 mcp = FastMCP(
