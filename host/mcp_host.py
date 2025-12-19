@@ -11,7 +11,8 @@ Features:
 
 import asyncio
 import json
-import os
+import re
+import difflib
 from pathlib import Path
 from typing import Any, Optional
 from datetime import datetime
@@ -31,58 +32,6 @@ from host.server_discovery import ServerDiscovery, ServerMetadata
 
 
 logger = get_logger(__name__)
-
-# class MCPClientWrapper:
-    # """Wrapper for MCP client session with metadata."""
-    
-    # def __init__(self, name: str, session: ClientSession, config: ServerConfig):
-    #     self.name = name
-    #     self.session = session
-    #     self.config = config
-    #     self.tools: list[dict] = []
-    #     self.resources: list[dict] = []
-    #     self.connected = False
-    
-    # async def initialize(self):
-    #     """Initialize client and discover capabilities."""
-    #     try:
-    #         await self.session.initialize()
-            
-    #         # Discover tools
-    #         tools_response = await self.session.list_tools()
-    #         self.tools = [
-    #             {
-    #                 "name": tool.name,
-    #                 "description": tool.description or "",
-    #                 "input_schema": tool.inputSchema,
-    #                 "server": self.name,
-    #             }
-    #             for tool in tools_response.tools
-    #         ]
-            
-    #         # Discover resources
-    #         resources_response = await self.session.list_resources()
-    #         self.resources = [
-    #             {
-    #                 "uri": resource.uri,
-    #                 "name": resource.name or "",
-    #                 "description": resource.description or "",
-    #                 "server": self.name,
-    #             }
-    #             for resource in resources_response.resources
-    #         ]
-            
-    #         self.connected = True
-    #         logger.info(
-    #             "mcp_client_initialized",
-    #             server=self.name,
-    #             tools=len(self.tools),
-    #             resources=len(self.resources),
-    #         )
-            
-    #     except Exception as e:
-    #         logger.error("mcp_client_init_failed", server=self.name, error=str(e))
-    #         raise
 
 class DiscoveredTool:
     """Tool discovered from MCP server."""
@@ -139,7 +88,6 @@ class ReActStep:
         self.observation = observation
         self.timestamp = datetime.now()
 
-
 class MCPHost:
     """
     MCP Host with ReAct reasoning for intelligent query routing.
@@ -177,7 +125,6 @@ class MCPHost:
         self.discovered_tools: dict[str, DiscoveredTool] = {}  # tool_name -> DiscoveredTool
         self.discovered_resources: dict[str, DiscoveredResource] = {}  # resource_name -> DiscoveredResource
 
-
         # ReAct configuration
         self.max_reasoning_steps = 5
         self.react_system_prompt = self._build_react_system_prompt()
@@ -186,90 +133,74 @@ class MCPHost:
     
     def _build_react_system_prompt(self) -> str:
         """Build system prompt for ReAct reasoning."""
-        return """You are an intelligent assistant which uses multiple specialized tools, sometimes combined, to answer user queries.
+        return """
+    ### ROLE
+    You are a reasoning engine that solves queries by looping through Thought, Action, and Action Input. You have access to a dynamic set of Tools and Resources provided in the user prompt.
 
-CRITICAL: You MUST follow this EXACT format for EVERY response:
-You MUST use ReAct (Reasoning + Acting) to solve queries:
-1. **Thought**: Analyze the query and plan your approach, explain what you are going to do
-2. **Action**: Choose the most appropriate tool(s) to use
-3. **Observation**: Process the tool results
-4. Repeat if needed, or provide final answer
+    CRITICAL: You MUST follow this EXACT format for EVERY response:
+    You MUST use ReAct (Reasoning + Acting) to solve queries:
+    1. **Thought**: Analyze the query, the "Available Tools" and "Available Resources" sections below. Plan your next move.
+    2. **Action**: Choose exactly ONE tool name or use "read_resource"
+    3. **Action Input**: Provide arguments in valid JSON format matching the tool's schema.
+    4. Repeat if needed, or provide final answer
 
-**If you need to use a TOOL:**
+    **CRITICAL: STOP after writing the Action Input. Do NOT write an "Observation". The system will provide the Observation to you in the next turn.**
 
-Thought: [explain what you need to do]
+    ### EXIT CONDITION
+    If the available information is sufficient:
+    **Final Answer**: [Your complete, helpful response to the user]
 
-Action: [exact_tool_name]
+    **If you need to use a TOOL:**
 
-Action Input: {"arg1": "value1", "arg2": "value2"}
+    Thought: [explain what you need to do]
+    Action: [exact_tool_name]
+    Action Input: {"arg1": "value1", "arg2": "value2"}
 
-**To read a RESOURCE (for formatted data):**
+    **To read a RESOURCE (for formatted data):**
 
-Thought: [explain why you need this data]
+    Thought: [explain why you need this data]
+    Action: read_resource
+    Action Input: {"uri": "resource://path/here"}
 
-Action: read_resource
+    ### CRITICAL INSTRUCTIONS:
+    - For weather queries, identify the location FIRST
+    - Use Weather Italy for Italian cities (Roma, Milano, Napoli, etc.)
+    - Use Weather USA for US locations (Seattle, NYC, Los Angeles, etc.)
+    - You can chain multiple tools if needed
+    - Always provide clear, concise final answers
+    - If uncertain about location, ASK for clarification
 
-Action Input: {"uri": "resource://path/here"}
+    ### RULES:
 
-**If you have completed your reasoning and/or have enough information:**
+    1. NEVER fabricate data. Only use what is provided in an "Observation:".
+    2. Only use tools listed under "Available Tools" or "Discovered Tools" or resources listed under "Available Resources" or "Discovered Resources".
+    3. You can only perform ONE action per turn.
+    4. Action Input MUST be a valid JSON object. No prose, no markdown, just the object.
+    5. If a location is ambiguous, use "Thought:" to explain why and then "Final Answer:" to ask the user for clarity.
+    6. If the user says "Hello" or "Hi", respond with "Final Answer:". Do NOT call a tool.
+    7. If no action can help, use "Final Answer:" to explain why
 
-Final Answer: [your complete answer to the user]
+    EXAMPLE (resource use):
+    User: "What's the weather in Rome?"
+    Thought: I need to get formatted weather data for Rome, Italy. I should use the Italian city weather resource.
+    Action: read_resource
+    Action Input: {"uri": "weather://italy/current/Rome"}
+    [STOP]
 
+    EXAMPLE (Chained tool use):
+    User: "Is it warmer in Florence or in San Francisco today"
+    Thought: I need to get weather data for Rome, Italy, and for San Francisco, CA, USA. I should use the both the Italian weather and the USA Weather tool, and compare results.
+    Action: get_weather_italy
+    Action Input: {"city_name": "Roma", "forecast_days": 1, "include_hourly": false}
+    Action: get_weather_usa
+    Action Input: {"city_name": "San Francisco", "forecast_days": 1, "include_hourly": false}
+    Observation: The weather in Rome today is 75°F and sunny. The weather in San Francisco today is 65°F and cloudy.
+    Thought: I have the weather data for both cities. Now I need to compare the temperatures and provide the answer.
 
-Available tool categories:
-- Weather Italy: Italian weather forecasts (cities in Italy)
-- Weather USA: US weather forecasts (US locations)
-- Neo4j Graph: Graph database queries (relationships, patterns)
-
-**CRITICAL INSTRUCTIONS**:
-- For weather queries, identify the location FIRST
-- Use Weather Italy for Italian cities (Roma, Milano, Napoli, etc.)
-- Use Weather USA for US locations (Seattle, NYC, Los Angeles, etc.)
-- You can chain multiple tools if needed
-- Always provide clear, concise final answers
-- If uncertain about location, ASK for clarification
-
-RULES:
-
-1. ALWAYS start with "Thought:" or "Final Answer:"
-2. Action MUST be EXACTLY one of the available tools OR "read_resource"
-3. Action Input MUST be valid JSON
-4. For weather queries, identify the LOCATION first
-5. You MAY chain multiple tools to get the final answer
-6. NEVER fabricate tool names or actions
-7. NEVER provide incomplete JSON in Action Input
-8. ALWAYS provide a Final Answer when you have enough information
-9. NEVER make up data - use only tool or resources results
-10. Resources provide read-only formatted data (like current weather displays)
-11. Tools perform queries and return structured data
-
-EXAMPLE:
-
-User: "What's the weather in Rome?"
-
-Thought: I need to get formatted weather data for Rome, Italy. I should use the Italian city weather resource.
-
-Action: read_resource
-
-Action Input: {"uri": "weather://italy/current/Rome"}
-
-EXAMPLE:
-
-User: "Is it warmer in Florence or in San Francisco today"
-
-Thought: I need to get weather data for Rome, Italy, and for San Francisco, CA, USA. I should use the both the Italian weather and the USA Weather tool, and compare results.
-
-Action: get_weather_italy
-
-Action Input: {"city_name": "Roma", "forecast_days": 1, "include_hourly": false}
-
-Action: get_weather_usa
-
-Action Input: {"city_name": "San Francisco", "forecast_days": 1, "include_hourly": false}
-
-Observation: The weather in Rome today is 75°F and sunny. The weather in San Francisco today is 65°F and cloudy.
-
-Thought: I have the weather data for both cities. Now I need to compare the temperatures and provide the answer.
+    EXAMPLE (Final Answer):
+    Observation: {"temp": "12°C", "condition": "Rain"}
+    Thought: I now have the weather data for Venice. I can provide the final answer.
+    Final Answer: The current weather in Venice is 12°C with rain.
 """
     
     def auto_register_servers(self, servers_dir: Optional[Path] = None):
@@ -386,6 +317,36 @@ Thought: I have the weather data for both cities. Now I need to compare the temp
         
         logger.info("mcp_host_stopped")
     
+    def extract_json_robust(text: str) -> dict:
+        """
+        Finds the first JSON-like object in a string and attempts to parse it.
+        Useful for small models that 'leak' prose before or after JSON.
+        """
+        try:
+            # Regex to find everything between the first '{' and the last '}'
+            match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+            if not match:
+                raise ValueError("No JSON object found in LLM output")
+                
+            json_str = match.group(0)
+            
+            # Clean up potential common LLM formatting issues
+            json_str = json_str.replace("```json", "").replace("```", "").strip()
+            
+            return json.loads(json_str)
+        
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse extracted JSON: {e}")
+            # Fallback: if the model leaked text AFTER the JSON, 
+            # try to find the last valid '}' and cut there.
+            try:
+                last_bracket = json_str.rfind('}')
+                if last_bracket != -1:
+                    return json.loads(json_str[:last_bracket + 1])
+            except:
+                pass
+            raise
+
     def register_server(self, config: ServerConfig):
         """Register an MCP server configuration."""
         if not isinstance(config, ServerConfig):
@@ -393,17 +354,9 @@ Thought: I have the weather data for both cities. Now I need to compare the temp
             raise TypeError("Server configuration must be a ServerConfig instance.")
         self.server_configs.append(config)
         logger.info("server_registered", name=config.name)
-    
-    # async def _initialize_servers(self):
-    #     """Initialize all registered MCP servers."""
-    #     for config in self.server_configs:
-    #         try:
-    #             # Store config - actual connection happens per-query
-    #             logger.info("server_config_loaded", server=config.name)
-    #         except Exception as e:
-    #             logger.error("server_init_failed", server=config.name, error=str(e))
-    
+        
     async def _discover_all_capabilities(self):
+        TIMEOUT_SECONDS = 20  # Tempo massimo per ogni server
         """Discover tools and resources from all registered servers."""
         for config in self.server_configs:
             try:
@@ -412,42 +365,67 @@ Thought: I have the weather data for both cities. Now I need to compare the temp
                     args=config.args,
                     env=config.env,
                 )
-                
-                async with stdio_client(server_params) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
+                async with asyncio.timeout(TIMEOUT_SECONDS):
+                    async with stdio_client(server_params) as (read, write):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
                         
-                        # Discover tools
-                        tools_response = await session.list_tools()
-                        for tool in tools_response.tools:
-                            discovered_tool = DiscoveredTool(
-                                name=tool.name,
-                                description=tool.description or "",
-                                input_schema=tool.inputSchema or {},
-                                server_name=config.name,
-                            )
-                            self.discovered_tools[tool.name] = discovered_tool
+                            # Discover tools
+                            tools_response = await session.list_tools()
+                            for tool in tools_response.tools:
+                                self.discovered_tools[tool.name] = DiscoveredTool(
+                                    name=tool.name,
+                                    description=tool.description or "",
+                                    input_schema=tool.inputSchema or {},
+                                    server_name=config.name,
+                                )
+
                         
                         # Discover resources
-                        resources_response = await session.list_resources()
-                        for resource in resources_response.resources:
-                            discovered_resource = DiscoveredResource(
-                                uri=resource.uri,
-                                name=resource.name or "",
-                                description=resource.description or "",
-                                server_name=config.name,
+                        try:
+                            static_resources_response = await session.list_resources()
+                            for resource in static_resources_response.resources:
+                                discovered_resource = DiscoveredResource(
+                                    uri=resource.uri,
+                                    name=resource.name or "",
+                                    description=resource.description or "",
+                                    server_name=config.name,
+                                )
+                                self.discovered_resources[resource.uri] = discovered_resource
+                        except Exception as e:
+                            logger.warning(
+                                "static_resource_discovery_failed",
+                                server=config.name,
+                                error=str(e),
                             )
-                            self.discovered_resources[resource.uri] = discovered_resource
-                        
+
+                        try:
+                            template_resources_response = await session.list_resource_templates()
+                            for resource in template_resources_response.resourceTemplates:
+                                discovered_resource = DiscoveredResource(
+                                    uri=resource.uriTemplate,
+                                    name=resource.name or "",
+                                    description=resource.description or "",
+                                    server_name=config.name,
+                                )
+                                self.discovered_resources[resource.uriTemplate] = discovered_resource
+                        except Exception as e:
+                            logger.warning(
+                                "resource_template_discovery_failed",
+                                server=config.name,
+                                error=str(e),
+                            )
+
                         logger.info(
                             "capabilities_discovered",
                             server=config.name,
                             tools=len(tools_response.tools),
-                            resources=len(resources_response.resources),
+                            resources=len(static_resources_response.resources) + len(template_resources_response.resourceTemplates),
                         )
+            except asyncio.TimeoutError:
+                logger.error("discovery_timeout", server=config.name, timeout=TIMEOUT_SECONDS)                
             except Exception as e:
                 logger.error("capability_discovery_failed", server=config.name, error=str(e))
-
 
     async def process_query(
         self,
@@ -506,12 +484,22 @@ Thought: I have the weather data for both cities. Now I need to compare the temp
 
             if step.action and step.action_input:
                 if step.action not in self.discovered_tools:
-                    logger.error(
-                        "tool_not_found_in_discovered",
-                        tool=step.action,
-                        available=list(self.discovered_tools.keys())[:5],
-                    )
-                    step.observation = f"Error: Tool '{step.action}' not found. Available tools: {', '.join(list(self.discovered_tools.keys())[:5])}"
+                    # Look for a close match
+                    close_matches = difflib.get_close_matches(step.action, list(self.discovered_tools.keys()), n=1, cutoff=0.6)
+                    if close_matches:
+                        suggested = close_matches[0]
+                        logger.warning(f"Fuzzy matching '{step.action}' to '{suggested}'")
+                        step.observation = f"Note: '{step.action}' not found. Did you mean '{suggested}'? Please retry with the correct name."
+                    else:
+                        logger.error(
+                            "tool_not_found_in_discovered",
+                            tool=step.action,
+                            available=list(self.discovered_tools.keys()),
+                        )
+                        step.observation = (
+                            f"Error: Tool '{step.action}' not found.{close_matches[0]}"   
+                            f"Available tools: {', '.join(list(self.discovered_tools.keys()))}"
+                        )
                 else:
                     logger.info("executing_tool", tool=step.action, input=step.action_input)
                     observation = await self._execute_action(
@@ -579,17 +567,25 @@ Thought: I have the weather data for both cities. Now I need to compare the temp
 
         # Build prompt
         tools_desc = await self._get_tools_description()
+        resources_desc = await self._get_resources_description()
+        #prompts_desc = await self._get_mcp_prompts_description() # TODO Optional: MCP Prompts
 
         if previous_steps:
             prompt = f"""Question: {original_query}
 {chr(10).join(context_parts)}
-Based on the observations above, what should you do next?
-Remember: Start with "Thought:" or "Final Answer:"
-{tools_desc}"""
+
+{tools_desc}
+{resources_desc}
+
+Based on the observations, tools and resources above, what should you do next?
+Remember: Start with "Thought:" or "Final Answer:" 
+"""
         else:
             prompt = f"""Question: {original_query}
 What is your first step?
 {tools_desc}
+{resources_desc}
+Based on the query and the available tools and resources, what should you do next?
 Remember: Start with "Thought:" and then specify Action and Action Input."""
         
         # Get LLM response
@@ -660,20 +656,36 @@ Remember: Start with "Thought:" and then specify Action and Action Input."""
         # Parse action input
         if action_input_lines:
             input_text = " ".join(action_input_lines)
+            # try:
+            #     # Try to extract JSON
+            #     if "{" in input_text and "}" in input_text:
+            #         json_start = input_text.index("{")
+            #         json_end = input_text.rindex("}") + 1
+            #         json_str = input_text[json_start:json_end]
+            #         action_input = json.loads(json_str)
+            #         logger.debug("parsed_action_input", input=action_input)
+            #     else:
+            #         # Fallback: create simple dict
+            #         action_input = {"query": input_text}
+            # except json.JSONDecodeError as e:
+            #     logger.warning("json_parse_failed", error=str(e), text=input_text[:100])
+            #     action_input = {"raw": input_text}
             try:
-                # Try to extract JSON
-                if "{" in input_text and "}" in input_text:
+                # Use a more aggressive "First-Match" approach
+                match = re.search(r'(\{.*?\})', input_text, re.DOTALL) # The '?' makes it non-greedy
+                if match:
+                    json_str = match.group(1)
+                    action_input = json.loads(json_str)
+                else:
+                    action_input = {"query": input_text}
+            except json.JSONDecodeError:
+                # Fallback to your rindex logic if the non-greedy match fails
+                try:
                     json_start = input_text.index("{")
                     json_end = input_text.rindex("}") + 1
-                    json_str = input_text[json_start:json_end]
-                    action_input = json.loads(json_str)
-                    logger.debug("parsed_action_input", input=action_input)
-                else:
-                    # Fallback: create simple dict
-                    action_input = {"query": input_text}
-            except json.JSONDecodeError as e:
-                logger.warning("json_parse_failed", error=str(e), text=input_text[:100])
-                action_input = {"raw": input_text}
+                    action_input = json.loads(input_text[json_start:json_end])
+                except:
+                    action_input = {"raw": input_text}
         logger.info(
             "step_parsed",
             thought_length=len(thought),
@@ -843,30 +855,51 @@ Remember: Start with "Thought:" and then specify Action and Action Input."""
                             return f"Binary data: {len(content.blob)} bytes"
                         return str(content)
                 return str(result)
-            
-    # def _infer_server(self, tool_name: str) -> str:
-    #     """Infer server name from tool name."""
-    #     tool_lower = tool_name.lower()
+    
+    async def _get_resources_description(self) -> str:
+        """Get description of all available resources, both static and templates"""
+        if not self.discovered_resources:
+            return "No resources available."
+
+        descriptions = []
+        if self.discovered_resources:
+
+            descriptions.append("\n\nAvailable Resources & Templates (read-only data):")
         
-    #     if "italy" in tool_lower or "italian" in tool_lower:
-    #         return "weather_italy"
-    #     elif "usa" in tool_lower or "us_" in tool_lower or "current_conditions" in tool_lower:
-    #         return "weather_usa"
-    #     elif "graph" in tool_lower or "neo4j" in tool_lower or "cypher" in tool_lower:
-    #         return "neo4j"
-        
-    #     # Default to first available server
-    #     return self.server_configs[0].name if self.server_configs else "unknown"
+            # Group resources by server
+            resources_by_server: dict[str, list[DiscoveredResource]] = {}
+            for resource in self.discovered_resources.values():
+                if resource.server_name not in resources_by_server:
+                    resources_by_server[resource.server_name] = []
+                resources_by_server[resource.server_name].append(resource)
+
+            for server_name, resources in resources_by_server.items():
+                descriptions.append(f"\n{server_name}:")
+                for res in resources:
+                    # Rileviamo se è un template cercando le parentesi graffe
+                    is_template = "{" in res.uri and "}" in res.uri
+                    
+                    if is_template:
+                        descriptions.append(f"  • TEMPLATE: {res.uri}")
+                        descriptions.append(f"    Desc: {res.description or 'Dynamic resource'}")
+                        descriptions.append(f"    INSTRUCTION: Replace the placeholder (e.g. {{city}}) with a real value.")
+                        descriptions.append(f"    Access via: read_resource(uri=\"{res.uri.replace('{city}', 'rome')}\") <-- Example")
+                    else:
+                        descriptions.append(f"  • STATIC: {res.uri}")
+                        descriptions.append(f"    Desc: {res.description or 'Fixed resource'}")
+                        descriptions.append(f"    Access via: read_resource(uri=\"{res.uri}\")")
+                    descriptions.append("")
+        descriptions.append("\n\nNote: Use resources for reading formatted data.")    
+        descriptions.append("\nIMPORTANT: When using a TEMPLATE, you MUST substitute all {parameters} with actual values before calling read_resource.")
+        return "\n".join(descriptions)
     
     async def _get_tools_description(self) -> str:
-        """Get description of all available tools AND resources."""
-        if not self.discovered_tools and not self.discovered_resources:
-            return "No tools or resources available."
+        """Get description of all available tools."""
+        if not self.discovered_tools:
+            return "No tools available."
 
         descriptions = []
         
-        # === TOOLS SECTION ===
-
         if self.discovered_tools:
             descriptions.append("Available Tools (use EXACT names):")
             # Group tools by server
@@ -891,30 +924,7 @@ Remember: Start with "Thought:" and then specify Action and Action Input."""
                             param_type = schema.get('type', 'any')
                             param_details.append(f"{param}:{param_type}")
                         descriptions.append(f"    Parameters: {', '.join(param_details)}")
-
-         # === RESOURCES SECTION ===
-
-        if self.discovered_resources:
-
-            descriptions.append("\n\nAvailable Resources (read-only data):")
-
-            # Group resources by server
-            resources_by_server: dict[str, list[DiscoveredResource]] = {}
-            for resource in self.discovered_resources.values():
-                if resource.server_name not in resources_by_server:
-                    resources_by_server[resource.server_name] = []
-                resources_by_server[resource.server_name].append(resource)
-
-            for server_name, resources in resources_by_server.items():
-                descriptions.append(f"\n{server_name}:")
-                for resource in resources:
-                    descriptions.append(f"  • {resource.uri}")
-                    if resource.name:
-                        descriptions.append(f"    Name: {resource.name}")
-                    descriptions.append(f"    {resource.description}")
-                    descriptions.append(f"    Access via: read_resource('{resource.uri}')")
-        descriptions.append("\n\nNote: Use tools for actions/queries. Use resources for reading static/formatted data.")
-
+        descriptions.append("\n\nNote: Use tools for actions that change state or require computation and/or multiple steps.")
         return "\n".join(descriptions)
     
     async def _synthesize_answer(

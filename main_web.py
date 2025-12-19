@@ -15,7 +15,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple
 from datetime import datetime
 
 # Gradio for web interface
@@ -105,7 +105,7 @@ class WebInterface:
             self.host = None
             logger.info("mcp_host_shutdown")
     
-    async def chat(self, message: str, history: List[Tuple[str, str]]) -> Tuple[str, List[Tuple[str, str]]]:
+    async def chat(self, message: str, history: List[Dict[str, str]]) -> Tuple[str, List[Dict[str, str]]]:
         """
         Process chat message.
         
@@ -121,7 +121,7 @@ class WebInterface:
         
         try:
             # Add user message to history
-            history.append((message, None))
+            history.append({"role": "user", "content": message})
             
             # Process query
             result = await self.host.process_query(
@@ -129,18 +129,19 @@ class WebInterface:
                 query=message,
                 token=self.token,
             )
+            print(result)
             
             # Update history with assistant response
-            history[-1] = (message, result["answer"])
+            history.append({"role": "assistant", "content": result["answer"]})
             
             return "", history
             
         except Exception as e:
             logger.error("chat_error", error=str(e))
             error_msg = f"❌ Error: {str(e)}"
-            history[-1] = (message, error_msg)
+            history.append({"role": "assistant", "content": error_msg})
             return "", history
-    
+          
     def get_registered_servers(self) -> str:
         """Get list of registered servers as formatted text."""
         if not self.host or not self.host.server_configs:
@@ -389,18 +390,19 @@ def create_gradio_interface():
         title="MCP Multi-Server Assistant",
         theme=gr.themes.Soft(),
         css="""
-        #chatbot {height: 600px; overflow-y: auto;}
+        .shutdown-container { position: absolute; top: 15px; right: 15px; z-index: 1000; }
+        #chatbot { height: 600px !important; overflow-y: auto !important; }
         .server-panel {border: 1px solid #ddd; padding: 15px; border-radius: 8px; margin: 10px 0;}
         """
     ) as demo:
         
+        with gr.Row(elem_classes="shutdown-container"):
+            shutdown_btn = gr.Button("🔌 Shutdown", variant="stop", size="sm")
+        
         gr.Markdown("""
         # 🤖 MCP Multi-Server Assistant
         
-        Chat with an AI assistant that has access to multiple specialized servers:
-        - 🌤️ Weather data (Italy & USA)
-        - 🕸️ Graph database (Neo4j)
-        - 🧠 Semantic reasoning
+        Chat with an AI assistant that has access to multiple specialized servers.
         """)
         
         with gr.Tabs():
@@ -431,6 +433,9 @@ def create_gradio_interface():
                     ],
                     inputs=msg,
                 )
+                
+                # Gestione Shutdown
+                shutdown_btn.click(fn=interface.shutdown)
                 
                 # Chat event handlers
                 async def chat_fn(message, history):

@@ -19,8 +19,7 @@ logger = get_logger(__name__)
 # Create MCP server
 mcp = FastMCP(
     name="Neo4jGraph",
-    instructions="Provides graph database operations for Neo4j with semantic querying",
-    transport="streamable-http"
+    instructions="Provides graph database operations for Neo4j with semantic querying"
 )
 
 # Initialize Neo4j client
@@ -185,3 +184,33 @@ class Neo4jGraphServer:
     def get_mcp_server(self) -> FastMCP:
         """Get the FastMCP server instance."""
         return self.mcp
+
+if __name__ == "__main__":
+    """
+    Run server in stdio mode for MCP host connection.
+    
+    This allows the MCP host to:
+    1. Connect via stdio
+    2. Discover tools with list_tools()
+    3. Discover resources with list_resources()
+    4. Call tools and read resources
+    """
+    import asyncio
+    from shared.logging_config import setup_logging
+    
+    # 1. Initialize the logging system to use stderr
+    setup_logging()
+    
+    async def run_server():
+        """Run the MCP server in stdio mode."""
+        server = Neo4jGraphServer()
+        await server.start()
+        
+        # Run FastMCP server in streamable http async mode
+        # This is what the MCP host connects to
+        await mcp.run_streamable_http_async()
+        
+        await server.stop()
+    
+    # Run the server
+    asyncio.run(run_server())

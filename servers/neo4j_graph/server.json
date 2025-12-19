@@ -1,7 +1,7 @@
 {
   "name": "neo4j",
   "description": "Neo4j graph database with semantic querying and recommendations",
-  "enabled": true,
+  "enabled": false,
   "version": "1.0.0",
   "requires_config": [
     "NEO4J_URI",

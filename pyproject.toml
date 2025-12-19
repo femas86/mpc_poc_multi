@@ -1,7 +1,7 @@
 [project]
 name = "mpc_poc_multi"
 version = "0.1.0"
-description = "MPC package with ReAct, Ollama local LLM, MPC host, clients and servers for meteo forecasts in italy and US"
+description = "MPC package with ReAct, Ollama local LLM, MPC host, clients and servers for meteo forecasts in italy and US, Neo4j GraphDB semantic querying and more"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -52,11 +52,11 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["mpc_poc_multi",
-"mpc_poc_multi/config", 
-"mpc_poc_multi/host",
-"mpc_poc_multi/servers",
-"mpc_poc_multi/shared",
-"mpc_poc_multi/main.py",
-"mpc_poc_multi/README.md"]
+packages = ["config", 
+"host",
+"servers",
+"shared",
+"tests",
+"main.py",
+"main_web.py"]
 

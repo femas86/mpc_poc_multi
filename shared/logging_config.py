@@ -28,7 +28,7 @@ def setup_logging(log_level: str = "INFO", json_logs: bool = False) -> None:
     # Configure standard logging
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stdout,
+        stream=sys.stderr,
         level=numeric_level,
     )
 

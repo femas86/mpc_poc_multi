@@ -1,12 +1,11 @@
 from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.session import ServerSession
-import shared
-# from shared.logging_config import get_logger
+from shared.logging_config import get_logger
 from servers.weather_us.wus_api_client import WeatherGovClient, GeoCodingClient
 from servers.weather_us.wus_schemas import WeatherForecastUSA, WeatherAlert, WeatherPeriod, GridPoint, ObservationStation
 
-logger = shared.logging_config.get_logger(__name__)
+logger = get_logger(__name__)
 
 # Create MCP server
 mcp = FastMCP(
@@ -71,7 +70,7 @@ async def get_weather_usa(
         include_alerts: Include weather alerts
         
     Returns:
-        Complete weather forecast from National Weather Service
+        Complete weather forecast from National Weather Service in the requested {location}
     """
     await ctx.info(f"Getting weather for {location}, USA")
     
@@ -306,6 +305,10 @@ class WeatherUSAServer:
 if __name__ == "__main__":
     """Run server in stdio mode for MCP host connection."""
     import asyncio
+    from shared.logging_config import setup_logging
+    
+    # 1. Initialize the logging system to use stderr
+    setup_logging()
     
     async def run_server():
         """Run the MCP server in stdio mode."""
@@ -313,7 +316,7 @@ if __name__ == "__main__":
         await server.start()
         
         # Run FastMCP server in stdio mode
-        await mcp.run(transport="stdio")
+        await mcp.run_stdio_async()
         
         await server.stop()
     
