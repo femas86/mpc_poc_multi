@@ -67,13 +67,17 @@ class SessionManager:
         if not self._running:
             return
         self._running = False
-        if self._cleanup_task:
+        if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
             try:
-                await self._cleanup_task
+                await asyncio.shield(self._cleanup_task)
             except asyncio.CancelledError:
-                pass
+                logger.debug("cleanup_task_cancelled_successfully")
+            except Exception as e:
+                logger.error(f"error_during_cleanup_task_stop: {e}")
+       
         logger.info("session_manager_stopped")
+    
 
     async def create_session(
         self, user_id: str, metadata: Optional[dict[str, Any]] = None, require_auth: bool = True

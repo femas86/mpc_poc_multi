@@ -100,14 +100,23 @@ class WebInterface:
     
     async def shutdown(self):
         """Shutdown MCP Host."""
-        if self.host:
-            await self.host.stop()
-            self.host = None
-            logger.info("mcp_host_shutdown")
-    
+        try:
+            if self.host:
+                await asyncio.wait_for(self.host.stop(), timeout=2.0)
+                self.host = None
+                logger.info("mcp_host_shutdown")
+        except Exception as e:
+            logger.error(f"shutdown_error_ignored: {e}")
+        finally:
+            logger.info("exiting_process")
+            # Chiude forzatamente il processo per evitare task pendenti
+            import os
+            import signal
+            os.kill(os.getpid(), signal.SIGINT)
+        
     async def chat(self, message: str, history: List[Dict[str, str]]) -> Tuple[str, List[Dict[str, str]]]:
         """
-        Process chat message.
+        Process chat message con streaming dei ragionamenti.
         
         Args:
             message: User message
@@ -397,7 +406,7 @@ def create_gradio_interface():
     ) as demo:
         
         with gr.Row(elem_classes="shutdown-container"):
-            shutdown_btn = gr.Button("🔌 Shutdown", variant="stop", size="sm")
+            shutdown_btn = gr.Button("🔌 Shutdown", variant="stop", elem_classes="shutdown-container", size="sm")
         
         gr.Markdown("""
         # 🤖 MCP Multi-Server Assistant
@@ -436,7 +445,7 @@ def create_gradio_interface():
                 
                 # Gestione Shutdown
                 shutdown_btn.click(fn=interface.shutdown)
-                
+
                 # Chat event handlers
                 async def chat_fn(message, history):
                     return await interface.chat(message, history)

@@ -78,28 +78,7 @@ class OllamaClient:
             model=self.model,
             timeout=self.timeout,
         )
-    # 
-    # async def generate_response(
-        # self,
-        # query: str,
-        # context: Dict,
-        # data: Dict,
-    #     history: List[Dict]
-    # ) -> str:
-    #     """Genera risposta usando Ollama con contesto completo"""
-        
-    #     # Costruisci prompt con tutto il contesto
-        # prompt = self._build_prompt(query, context, data, history)
-
-        # response = await self.client.oChat(
-            # model = self.model,
-            # messages=prompt,
-            # think= 'medium',
-            # format= 'json',
-    #         stream= False
-    #     )
-
-    #     return response.get('response', '')
+   
     @retry_async(max_attempts=3, delay=1.0, backoff=2.0)
     async def chat(
         self,
@@ -125,6 +104,13 @@ class OllamaClient:
         Raises:
             RuntimeError: If Ollama request fails
         """
+        
+        # 1. TRIMMING: Mantieni il System Prompt + solo gli ultimi 3 messaggi
+        # Questo evita che il modello "impazzisca" leggendo troppi errori passati
+        if len(messages) > 4:
+            system_msg = messages[0] # Il primo è sempre il System Prompt
+            last_messages = messages[-3:] # Gli ultimi 3 scambi
+            messages = [system_msg] + last_messages
         try:
             # Convert messages to dict format
             message_dicts = [msg.model_dump(exclude_none=True) for msg in messages]
@@ -132,9 +118,16 @@ class OllamaClient:
             # Prepare request options
             options: dict[str, Any] = {
                 "temperature": temperature,
+                "num_predict": max_tokens or 512,
+                "stop": [
+                    "Observation:",         # Fondamentale: ferma l'LLM dopo l'azione
+                    "User:",                # Evita che l'LLM simuli l'utente
+                    "Thought: Observation:", # Cattura loop comuni
+                    "\n\n",
+                    "\n"
+                ],
+                "num_ctx": 4096,            # Focalizza l'attenzione su una finestra gestibile
             }
-            if max_tokens:
-                options["num_predict"] = max_tokens
 
             logger.debug(
                 "ollama_chat_request",
@@ -167,6 +160,12 @@ class OllamaClient:
                 content = response.message.content
             elif isinstance(response, dict) and "message" in response:
                 content = response["message"].get("content", "")
+
+            content = content.strip()
+            if "Observation:" in content:
+                content = content.split("Observation:")[0].strip()
+            if content.count("Thought:") > 1:
+                content = "Thought:" + content.split("Thought:")[1].split("Thought:")[0]
 
             ollama_response = OllamaResponse(
                 content=content,
@@ -298,59 +297,49 @@ class OllamaClient:
 
     """2 metodi della versione vecchia da stabilire se servono o no"""
 
-    def _build_prompt(
-            self,
-            query: str,
-            context: Dict,
-            data: Dict,
-            history: List[Dict]
-    ) -> str:
-        """Costruisce un prompt strutturato"""
-        prompt_parts = [
-            "Sei un assistente che risponde a domande usando dati da varie fonti.",
-            f"\nContesto utente: {json.dumps(context, indent=2)}",
-            f"\nDati raccolti: {json.dumps(data, indent=2)}"
-        ]
+    # def _build_prompt(
+    #         self,
+    #         query: str,
+    #         context: Dict,
+    #         data: Dict,
+    #         history: List[Dict]
+    # ) -> str:
+    #     """Costruisce un prompt strutturato"""
+    #     prompt_parts = [
+    #         "Sei un assistente che risponde a domande usando dati da varie fonti.",
+    #         f"\nContesto utente: {json.dumps(context, indent=2)}",
+    #         f"\nDati raccolti: {json.dumps(data, indent=2)}"
+    #     ]
 
-        if history:
-            prompt_parts.append("\nStorico conversazione: ")
-            for item in history[-4:]:   #Ultimi 4 scambi
-                prompt_parts.append(f"Q: {item['query']}")
-                prompt_parts.append(f"A: {item['response']}")
+    #     if history:
+    #         prompt_parts.append("\nStorico conversazione: ")
+    #         for item in history[-4:]:   #Ultimi 4 scambi
+    #             prompt_parts.append(f"Q: {item['query']}")
+    #             prompt_parts.append(f"A: {item['response']}")
 
-        prompt_parts.append(f"\nDomanda corrente: {query}")
-        prompt_parts.append(f"\nRisposta:")
+    #     prompt_parts.append(f"\nDomanda corrente: {query}")
+    #     prompt_parts.append(f"\nRisposta:")
 
-        return "\n".join(prompt_parts)
+    #     return "\n".join(prompt_parts)
     
-    async def get_routing(self, routing_prompt: str) -> List[str]:
-        """Determina routing usando Ollama"""
+    # async def get_routing(self, routing_prompt: str) -> List[str]:
+    #     """Determina routing usando Ollama"""
         
-        # response = await self.client.post(
-        #     f"{self.host}/api/generate",
-        #     json={
-        #         "model": self.model,
-        #         "prompt": routing_prompt,
-        #         "stream": False,
-        #         "format": "json"
-        #     }
-        # )
-
-        response = await self.client.chat(
-            model = self.model,
-            messages=routing_prompt,
-            think= 'high',
-            format= 'json',
-            stream= False
-        )
-        routing = json.loads(response.get('response', '[]'))
-        return routing
+    #     response = await self.client.chat(
+    #         model = self.model,
+    #         messages=routing_prompt,
+    #         think= 'high',
+    #         format= 'json',
+    #         stream= False
+    #     )
+    #     routing = json.loads(response.get('response', '[]'))
+    #     return routing
     
     async def close(self) -> None:
         """Close the Ollama client connection."""
         # AsyncClient doesn't require explicit cleanup in current version
         logger.debug("ollama_client_closed")
 
-    """Vecchia versione perché non mi fido del cleanup automatico"""    
-    async def close_old(self):
-        await self.client.aclose()
+    # """Vecchia versione perché non mi fido del cleanup automatico"""    
+    # async def close_old(self):
+    #     await self.client.aclose()

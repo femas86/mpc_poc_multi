@@ -138,11 +138,9 @@ class MCPHost:
     You are a reasoning engine that solves queries by looping through Thought, Action, and Action Input. You have access to a dynamic set of Tools and Resources provided in the user prompt.
 
     CRITICAL: You MUST follow this EXACT format for EVERY response:
-    You MUST use ReAct (Reasoning + Acting) to solve queries:
     1. **Thought**: Analyze the query, the "Available Tools" and "Available Resources" sections below. Plan your next move.
     2. **Action**: Choose exactly ONE tool name or use "read_resource"
     3. **Action Input**: Provide arguments in valid JSON format matching the tool's schema.
-    4. Repeat if needed, or provide final answer
 
     **CRITICAL: STOP after writing the Action Input. Do NOT write an "Observation". The system will provide the Observation to you in the next turn.**
 
@@ -164,44 +162,46 @@ class MCPHost:
 
     ### CRITICAL INSTRUCTIONS:
     - For weather queries, identify the location FIRST
-    - Use Weather Italy for Italian cities (Roma, Milano, Napoli, etc.)
-    - Use Weather USA for US locations (Seattle, NYC, Los Angeles, etc.)
+    - Use Weather Italy for Italian cities
+    - Use Weather USA for US locations
     - You can chain multiple tools if needed
     - Always provide clear, concise final answers
     - If uncertain about location, ASK for clarification
 
     ### RULES:
 
-    1. NEVER fabricate data. Only use what is provided in an "Observation:".
-    2. Only use tools listed under "Available Tools" or "Discovered Tools" or resources listed under "Available Resources" or "Discovered Resources".
-    3. You can only perform ONE action per turn.
-    4. Action Input MUST be a valid JSON object. No prose, no markdown, just the object.
-    5. If a location is ambiguous, use "Thought:" to explain why and then "Final Answer:" to ask the user for clarity.
-    6. If the user says "Hello" or "Hi", respond with "Final Answer:". Do NOT call a tool.
-    7. If no action can help, use "Final Answer:" to explain why
+    - NEVER fabricate data. Only use what is provided in an "Observation:".
+    - NEVER fabricate tools or resource, use only available.
+    - You can only perform ONE action per turn.
+    - Action Input MUST be a valid JSON object.
+    - If a location is ambiguous, use "Thought:" to explain why and then "Final Answer:" to ask the user for clarity.
+    - If the user says "Hello" or "Hi", respond with "Final Answer:". Do NOT call a tool.
+    - If no action can help, use "Final Answer:" to explain why
+    - CRITICAL: If you receive an error from a tool, DO NOT invent tools. Use "Final Answer:" to inform the user the service is unavailable.
 
-    EXAMPLE (resource use):
-    User: "What's the weather in Rome?"
-    Thought: I need to get formatted weather data for Rome, Italy. I should use the Italian city weather resource.
-    Action: read_resource
-    Action Input: {"uri": "weather://italy/current/Rome"}
-    [STOP]
-
-    EXAMPLE (Chained tool use):
-    User: "Is it warmer in Florence or in San Francisco today"
-    Thought: I need to get weather data for Rome, Italy, and for San Francisco, CA, USA. I should use the both the Italian weather and the USA Weather tool, and compare results.
-    Action: get_weather_italy
-    Action Input: {"city_name": "Roma", "forecast_days": 1, "include_hourly": false}
-    Action: get_weather_usa
-    Action Input: {"city_name": "San Francisco", "forecast_days": 1, "include_hourly": false}
-    Observation: The weather in Rome today is 75°F and sunny. The weather in San Francisco today is 65°F and cloudy.
-    Thought: I have the weather data for both cities. Now I need to compare the temperatures and provide the answer.
-
-    EXAMPLE (Final Answer):
-    Observation: {"temp": "12°C", "condition": "Rain"}
-    Thought: I now have the weather data for Venice. I can provide the final answer.
-    Final Answer: The current weather in Venice is 12°C with rain.
 """
+#  esempi rimossi dal prompt qui sopra per rimpicciolire la finestra di contesto del modello utilizzata per il system prompt
+#  EXAMPLE (resource use):
+    # User: "What's the weather in Rome?"
+    # Thought: I need to get formatted weather data for Rome, Italy. I should use the Italian city weather resource.
+    # Action: read_resource
+    # Action Input: {"uri": "weather://italy/current/Rome"}
+    # [STOP]
+# 
+    # EXAMPLE (Chained tool use):
+    # User: "Is it warmer in Florence or in San Francisco today"
+    # Thought: I need to get weather data for Rome, Italy, and for San Francisco, CA, USA. I should use the both the Italian weather and the USA Weather tool, and compare results.
+    # Action: get_weather_italy
+    # Action Input: {"city_name": "Roma", "forecast_days": 1, "include_hourly": false}
+    # Action: get_weather_usa
+    # Action Input: {"city_name": "San Francisco", "forecast_days": 1, "include_hourly": false}
+    # Observation: The weather in Rome today is 75°F and sunny. The weather in San Francisco today is 65°F and cloudy.
+    # Thought: I have the weather data for both cities. Now I need to compare the temperatures and provide the answer.
+# 
+    # EXAMPLE (Final Answer):
+    # Observation: {"temp": "12°C", "condition": "Rain"}
+    # Thought: I now have the weather data for Venice. I can provide the final answer.
+    # Final Answer: The current weather in Venice is 12°C with rain.
     
     def auto_register_servers(self, servers_dir: Optional[Path] = None):
         """
@@ -356,7 +356,7 @@ class MCPHost:
         logger.info("server_registered", name=config.name)
         
     async def _discover_all_capabilities(self):
-        TIMEOUT_SECONDS = 20  # Tempo massimo per ogni server
+        #TIMEOUT_SECONDS = 20  # Tempo massimo per ogni server
         """Discover tools and resources from all registered servers."""
         for config in self.server_configs:
             try:
@@ -365,20 +365,20 @@ class MCPHost:
                     args=config.args,
                     env=config.env,
                 )
-                async with asyncio.timeout(TIMEOUT_SECONDS):
-                    async with stdio_client(server_params) as (read, write):
-                        async with ClientSession(read, write) as session:
-                            await session.initialize()
-                        
-                            # Discover tools
-                            tools_response = await session.list_tools()
-                            for tool in tools_response.tools:
-                                self.discovered_tools[tool.name] = DiscoveredTool(
-                                    name=tool.name,
-                                    description=tool.description or "",
-                                    input_schema=tool.inputSchema or {},
-                                    server_name=config.name,
-                                )
+                #async with asyncio.timeout(TIMEOUT_SECONDS):
+                async with stdio_client(server_params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                    
+                        # Discover tools
+                        tools_response = await session.list_tools()
+                        for tool in tools_response.tools:
+                            self.discovered_tools[tool.name] = DiscoveredTool(
+                                name=tool.name,
+                                description=tool.description or "",
+                                input_schema=tool.inputSchema or {},
+                                server_name=config.name,
+                            )
 
                         
                         # Discover resources
@@ -422,8 +422,8 @@ class MCPHost:
                             tools=len(tools_response.tools),
                             resources=len(static_resources_response.resources) + len(template_resources_response.resourceTemplates),
                         )
-            except asyncio.TimeoutError:
-                logger.error("discovery_timeout", server=config.name, timeout=TIMEOUT_SECONDS)                
+            # except asyncio.TimeoutError:
+            #     logger.error("discovery_timeout", server=config.name, timeout=TIMEOUT_SECONDS)                
             except Exception as e:
                 logger.error("capability_discovery_failed", server=config.name, error=str(e))
 
@@ -489,7 +489,7 @@ class MCPHost:
                     if close_matches:
                         suggested = close_matches[0]
                         logger.warning(f"Fuzzy matching '{step.action}' to '{suggested}'")
-                        step.observation = f"Note: '{step.action}' not found. Did you mean '{suggested}'? Please retry with the correct name."
+                        step.observation = f"Note: '{step.action}' not found. Did you mean '{suggested}'?"
                     else:
                         logger.error(
                             "tool_not_found_in_discovered",
@@ -497,7 +497,7 @@ class MCPHost:
                             available=list(self.discovered_tools.keys()),
                         )
                         step.observation = (
-                            f"Error: Tool '{step.action}' not found.{close_matches[0]}"   
+                            f"Error: Tool '{step.action}' not found."
                             f"Available tools: {', '.join(list(self.discovered_tools.keys()))}"
                         )
                 else:
@@ -600,6 +600,14 @@ Remember: Start with "Thought:" and then specify Action and Action Input."""
             max_tokens=500  # Lower temperature for more focused reasoning
         )
         
+        # Se il contenuto non contiene 'Action:', allora è probabilmente una risposta finale
+        if "Action:" not in response.content and "Final Answer:" not in response.content:
+            # Se il 1B è confuso, forziamo noi la chiusura
+            return response.content
+
+        if "Final Answer:" in response.content:
+            return response.content.split("Final Answer:")[-1].strip()
+
         # Parse response
         step = self._parse_reasoning_response(
             step_num=len(previous_steps) + 1,
@@ -951,7 +959,7 @@ Provide a clear, direct answer to the user's question."""
         messages = [
             OllamaMessage(role="user", content=synthesis_prompt),
         ]
-        response = await self.ollama_client.chat(messages=messages, temperature=0.3)        
+        response = await self.ollama_client.chat(messages=messages, temperature=0.1)        
         return response.content
     
     async def get_session_info(self, session_id: str) -> dict[str, Any]:

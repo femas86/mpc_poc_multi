@@ -32,7 +32,7 @@ async def search_us_location(location: str, ctx: Context[ServerSession, None]) -
     await ctx.info(f"Searching for US location: {location}")
     
     try:
-        result = await geocoding_client.geocode_address(location)
+        result = await geocoding_client.geocode(location)
         
         if not result:
             return {
@@ -77,7 +77,7 @@ async def get_weather_usa(
     try:
         # Geocode location
         await ctx.debug("Geocoding location...")
-        geo_result = await geocoding_client.geocode_address(location)
+        geo_result = await geocoding_client.geocode(location)
         
         if not geo_result:
             return {
@@ -186,7 +186,7 @@ async def get_current_conditions_usa(
     
     try:
         # Geocode
-        geo_result = await geocoding_client.geocode_address(location)
+        geo_result = await geocoding_client.geocode(location)
         if not geo_result:
             return {"success": False, "error": "Location not found"}
         
@@ -247,7 +247,7 @@ async def forecast_resource(location: str) -> str:
         Formatted forecast string
     """
     try:
-        geo_result = await geocoding_client.geocode_address(location)
+        geo_result = await geocoding_client.geocode(location)
         if not geo_result:
             return f"Location '{location}' not found in USA"
         

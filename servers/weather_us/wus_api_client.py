@@ -235,23 +235,7 @@ class WeatherGovClient:
         except httpx.HTTPError as e:
             logger.error("hourly_forecast_error", error=str(e))
             raise RuntimeError(f"Hourly forecast retrieval failed: {e}") from e
-        
-    # @lru_cache(maxsize=256)
-    # async def get_point(self, lat: float, lon: float) -> Dict:
-    #     """Ottieni metadata punto griglia"""
-    #     response = await self.client.get(
-    #         f"{self.BASE_URL}/points/{lat},{lon}"
-    #     )
-    #     response.raise_for_status()
-    #     return response.json()
-    
-    # async def get_forecast(self, forecast_url: str) -> Dict:
-    #     """Ottieni forecast da URL"""
-    #     response = await self.client.get(forecast_url)
-    #     response.raise_for_status()
-    #     return response.json()
-
-    
+     
     @retry_async(max_attempts=3, delay=2.0)
     async def get_alerts(self, state: str, latitude: float, longitude: float) -> list[WeatherAlert]:
         """
