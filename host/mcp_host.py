@@ -14,9 +14,10 @@ import json
 import re
 import difflib
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, AsyncIterator
 from datetime import datetime
 
+from dataclasses import dataclass
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -69,24 +70,25 @@ class DiscoveredResource:
         self.description = description
         self.server_name = server_name
         # self.input_schema = input_schema
-    
+
+@dataclass 
 class ReActStep:
     """Single step in ReAct reasoning chain."""
     
-    def __init__(
-        self,
-        step_num: int,
-        thought: str,
-        action: Optional[str] = None,
-        action_input: Optional[dict] = None,
-        observation: Optional[str] = None,
-    ):
-        self.step_num = step_num
-        self.thought = thought
-        self.action = action
-        self.action_input = action_input
-        self.observation = observation
-        self.timestamp = datetime.now()
+    # def __init__(
+        # self,
+        # step_num: int,
+        # thought: str,
+        # action: Optional[str] = None,
+        # action_input: Optional[dict] = None,
+        # observation: Optional[str] = None,
+    # ):
+    step_num:int
+    thought:str
+    action:str = None
+    action_input:dict = None
+    observation:str = None
+    timestamp = datetime.now()
 
 class MCPHost:
     """
@@ -134,53 +136,84 @@ class MCPHost:
     def _build_react_system_prompt(self) -> str:
         """Build system prompt for ReAct reasoning."""
         return """
-    ### ROLE
-    You are a reasoning engine that solves queries by looping through Thought, Action, and Action Input. You have access to a dynamic set of Tools and Resources provided in the user prompt.
+### ROLE
+You are a ReAct Agent. Solve queries using this strictly enforced cycle:
 
-    CRITICAL: You MUST follow this EXACT format for EVERY response:
-    1. **Thought**: Analyze the query, the "Available Tools" and "Available Resources" sections below. Plan your next move.
-    2. **Action**: Choose exactly ONE tool name or use "read_resource"
-    3. **Action Input**: Provide arguments in valid JSON format matching the tool's schema.
+Thought: Reasoning about what to do.
+Action: Tool name (if needed).
+Action Input: {"key": "value"} (valid JSON).
 
-    **CRITICAL: STOP after writing the Action Input. Do NOT write an "Observation". The system will provide the Observation to you in the next turn.**
+### EXIT CONDITION
+If you have the answer or no tool is needed:
+Thought: Reasoning.
+Final Answer: [Your answer in Italian].
 
-    ### EXIT CONDITION
-    If the available information is sufficient:
-    **Final Answer**: [Your complete, helpful response to the user]
+### TOOL RULES
+- USE ONLY ONE ACTION PER TURN.
+- STOP immediately after Action Input.
+- Weather IT: Use 'weather_italy' for Italian cities.
+- Weather US: Use 'weather_us' for USA cities.
+- ERROR: If a tool fails, use 'Final Answer' to say it's unavailable.
+- NO TOOLS: If the query is a greeting or general talk, use 'Final Answer', skip Thought and Action.
+- GENERAL THINKING: use 'Final Answer:' ONLY when the task is complete.
 
-    **If you need to use a TOOL:**
+### FORMAT EXAMPLE (TOOL)
+Thought: I need the weather for Rome.
+Action: get_weather_italy
+Action Input: {"location": "Roma"}
 
-    Thought: [explain what you need to do]
-    Action: [exact_tool_name]
-    Action Input: {"arg1": "value1", "arg2": "value2"}
-
-    **To read a RESOURCE (for formatted data):**
-
-    Thought: [explain why you need this data]
-    Action: read_resource
-    Action Input: {"uri": "resource://path/here"}
-
-    ### CRITICAL INSTRUCTIONS:
-    - For weather queries, identify the location FIRST
-    - Use Weather Italy for Italian cities
-    - Use Weather USA for US locations
-    - You can chain multiple tools if needed
-    - Always provide clear, concise final answers
-    - If uncertain about location, ASK for clarification
-
-    ### RULES:
-
-    - NEVER fabricate data. Only use what is provided in an "Observation:".
-    - NEVER fabricate tools or resource, use only available.
-    - You can only perform ONE action per turn.
-    - Action Input MUST be a valid JSON object.
-    - If a location is ambiguous, use "Thought:" to explain why and then "Final Answer:" to ask the user for clarity.
-    - If the user says "Hello" or "Hi", respond with "Final Answer:". Do NOT call a tool.
-    - If no action can help, use "Final Answer:" to explain why
-    - CRITICAL: If you receive an error from a tool, DO NOT invent tools. Use "Final Answer:" to inform the user the service is unavailable.
+### FORMAT EXAMPLE (FINAL)
+Thought: The user said hello.
+Final Answer: Ciao! Come posso aiutarti?
 
 """
-#  esempi rimossi dal prompt qui sopra per rimpicciolire la finestra di contesto del modello utilizzata per il system prompt
+#  versione verbosa del prompt qui sopra rimossa per rimpicciolire la finestra di contesto del modello utilizzata per il system prompt
+    ### ROLE
+    # You are a reasoning engine that solves queries by looping through Thought, Action, and Action Input. You have access to a dynamic set of Tools and Resources provided in the user prompt.
+
+    # CRITICAL: You MUST follow this EXACT format for EVERY response:
+    # 1. **Thought**: Analyze the query, the "Available Tools" and "Available Resources" sections below. Plan your next move.
+    # 2. **Action**: Choose exactly ONE tool name or use "read_resource"
+    # 3. **Action Input**: Provide arguments in valid JSON format matching the tool's schema.
+
+    # **CRITICAL: STOP after writing the Action Input. Do NOT write an "Observation". The system will provide the Observation to you in the next turn.**
+
+    # ### EXIT CONDITION
+    # If the available information is sufficient:
+    # **Final Answer**: [Your complete, helpful response to the user]
+
+    # **If you need to use a TOOL:**
+
+    # Thought: [explain what you need to do]
+    # Action: [exact_tool_name]
+    # Action Input: {"arg1": "value1", "arg2": "value2"}
+
+    # **To read a RESOURCE (for formatted data):**
+
+    # Thought: [explain why you need this data]
+    # Action: read_resource
+    # Action Input: {"uri": "resource://path/here"}
+
+    # ### CRITICAL INSTRUCTIONS:
+    # - For weather queries, identify the location FIRST
+    # - Use weather_italy server and its tools ONLY for Italian cities
+    # - Use weather_us server and its tools ONLY for US locations
+    # - Do not use server_us tools for city in Italy, or vice versa
+    # - You can chain multiple tools if needed
+    # - Always provide clear, concise final answers
+    # - If uncertain about location, ASK for clarification
+
+    # ### RULES:
+
+    # - NEVER fabricate data. Only use what is provided in an "Observation:".
+    # - NEVER fabricate tools or resource, use only available.
+    # - You can only perform ONE action per turn.
+    # - Action Input MUST be a valid JSON object.
+    # - If a location is ambiguous, use "Thought:" to explain why and then "Final Answer:" to ask the user for clarity.
+    # - If the user says thing that do not regard available tools, respond with "Final Answer:". Do NOT call a tool.
+    # - If no action can help, use "Final Answer:" to explain why
+    # - Every response MUST start with "Thought:" with your reasoning; ONLY AFTER you can write a "Final Answer:" or "Action:"
+    # - CRITICAL: If you receive an error from a tool, DO NOT invent tools. Use "Final Answer:" to inform the user the service is unavailable.
 #  EXAMPLE (resource use):
     # User: "What's the weather in Rome?"
     # Thought: I need to get formatted weather data for Rome, Italy. I should use the Italian city weather resource.
@@ -541,6 +574,128 @@ class MCPHost:
             "session_id": session_id,
         }
     
+    
+        """
+        Versione generatore del ciclo ReAct per aggiornare la UI in tempo reale.
+        """
+        logger.info("query_received", session_id=session_id, query=query)
+        # Validate session
+        if self.auth_middleware:
+            try:
+                await self.auth_middleware.authenticate_request(
+                    session_id=session_id,
+                    token=token,
+                )
+            except Exception as e:
+                return {"error": f"Authentication failed: {e}"}
+        
+        # Add query to context
+        context = await self.context_manager.get_context(session_id)
+        context.append({"role": "user", "content": query})
+
+        for step_num in range(1, self.max_reasoning_steps + 1):
+            logger.debug("react_step", step=step_num, session=session_id)
+            response = await self.ollama_client.chat(
+            messages=context,
+            temperature=0.0 # Determinismo massimo
+            )
+            content = response.content
+            # Parsing preciso: separiamo Thought da Action
+            thought, action, action_input = self._parse_reasoning_response(content)
+
+    async def process_query_iterator(
+    self,
+    session_id: str,
+    query: str,
+    token: Optional[str] = None,
+    ) -> AsyncIterator[dict[str, str]]:
+        """
+        Versione asincrona iterativa di process_query per aggiornamenti UI real-time.
+        """
+        logger.info("query_received_streaming", session_id=session_id, query=query)
+    
+        # 1. Validazione sessione (stessa logica dell'originale)
+        if self.auth_middleware:
+            try:
+                await self.auth_middleware.authenticate_request(session_id=session_id, token=token)
+            except Exception as e:
+                yield {"type": "answer", "content": f"❌ Authentication failed: {e}"}
+                return
+
+        # 2. Aggiunta query al contesto
+        await self.context_manager.add_message(session_id=session_id, role="user", content=query)
+    
+        react_steps: list[ReActStep] = []
+        final_answer = None
+    
+        # 3. ReAct Loop
+        for step_num in range(1, self.max_reasoning_steps + 1):
+            # Ottieni ragionamento dall'LLM
+            step = await self._reasoning_step(session_id, query, react_steps)
+            react_steps.append(step)
+        
+            # INVIA IL THOUGHT ALLA UI
+            if step.thought:
+                content = step.thought
+                clean_content = content.replace("**Thought:**", "Thought:").replace("**Action:**", "Action:")
+                has_action = "Action:" in clean_content
+                has_final = "Final Answer:" in clean_content
+
+                if has_action:
+                    # Estraiamo il Thought (tutto ciò che precede Action:)
+                    thought_part = clean_content.split("Action:")[0].replace("Thought:", "").replace("Final Answer:", "").strip()
+                    if thought_part:
+                        yield {"type": "thought", "content": thought_part}
+
+                elif has_final:
+                    # Se NON c'è un'azione ma c'è Final Answer, allora è davvero la fine
+                    final_part = clean_content.split("Final Answer:")[-1].strip()
+                    # Rimuoviamo eventuali residui di tag Thought rimasti nella parte finale
+                    final_part = final_part.split("Thought:")[0].strip() 
+                    
+                    yield {"type": "answer", "content": final_part}
+                    break
+
+                else:
+                    # Solo Thought generico
+                    yield {"type": "thought", "content": clean_content.replace("Thought:", "").strip()}
+
+            # Execute action if specified
+            if step.action and step.action_input:
+                # Notifica l'inizio dell'azione alla UI
+                yield {"type": "thought", "content": f"⚙️ Esecuzione tool:* `{step.action}` ..."}
+
+                if step.action not in self.discovered_tools:
+                    close_matches = difflib.get_close_matches(step.action, list(self.discovered_tools.keys()), n=1, cutoff=0.6)
+                    if close_matches:
+                        suggested = close_matches[0]
+                        step.observation = f"Note: '{step.action}' not found. Did you mean '{suggested}'?"
+                    else:
+                        step.observation = f"Error: Tool '{step.action}' not found. Available: {', '.join(list(self.discovered_tools.keys()))}"
+                else:
+                    # Esecuzione reale
+                    observation = await self._execute_action(
+                        session_id=session_id,
+                        action=step.action,
+                        action_input=step.action_input,
+                    )
+                    step.observation = observation
+            
+                # Notifica il completamento dell'azione alla UI
+                yield {"type": "thought", "content": f"✅ *Risultato ottenuto da:* `{step.action}`"}
+            else:
+                # Se l'LLM non ha prodotto un'azione e non è una risposta finale, evitiamo loop vuoti
+                if not final_answer and step_num == self.max_reasoning_steps:
+                    break
+
+        # 4. Sintesi finale se non raggiunta
+        if not final_answer:
+            final_answer = await self._synthesize_answer(session_id, react_steps)
+    
+        # 5. Aggiunta risposta finale al contesto e invio alla UI
+        await self.context_manager.add_message(session_id=session_id, role="assistant", content=final_answer)
+        yield {"type": "answer", "content": final_answer}
+
     async def _reasoning_step(
         self,
         session_id: str,
@@ -602,11 +757,29 @@ Remember: Start with "Thought:" and then specify Action and Action Input."""
         
         # Se il contenuto non contiene 'Action:', allora è probabilmente una risposta finale
         if "Action:" not in response.content and "Final Answer:" not in response.content:
-            # Se il 1B è confuso, forziamo noi la chiusura
-            return response.content
+            # Se ha scritto almeno un "Thought:", lasciamolo scorrere senza forzare il Final Answer.
+            # Forziamo il Final Answer SOLO se il testo è breve e privo di struttura ReAct (es. un saluto secco)
+            if "Thought:" not in response.content or len(response.content.strip()) < 150:
+                logger.info("force_final_answer_minimal_response")
+                step = self._parse_reasoning_response(
+                    step_num=len(previous_steps) + 1,
+                    response_text=f"Final Answer: {response.content.strip()}",
+                )
+            else:
+                # È un Thought puro o un ragionamento incompleto: lo trattiamo come tale
+                # senza aggiungere Final Answer, così il loop può continuare
+                step = self._parse_reasoning_response(
+                    step_num=len(previous_steps) + 1,
+                    response_text=response.content.strip()
+                )
+            return step
 
         if "Final Answer:" in response.content:
-            return response.content.split("Final Answer:")[-1].strip()
+            step= self._parse_reasoning_response(
+                step_num=len(previous_steps) + 1,
+                response_text=response.content.split("Final Answer:")[-1].strip()
+            )
+            return step
 
         # Parse response
         step = self._parse_reasoning_response(

@@ -114,7 +114,7 @@ class WebInterface:
             import signal
             os.kill(os.getpid(), signal.SIGINT)
         
-    async def chat(self, message: str, history: List[Dict[str, str]]) -> Tuple[str, List[Dict[str, str]]]:
+    async def chat(self, message: str, history: List[Dict[str, str]]):# -> Tuple[str, List[Dict[str, str]]]:
         """
         Process chat message con streaming dei ragionamenti.
         
@@ -122,8 +122,6 @@ class WebInterface:
             message: User message
             history: Chat history
             
-        Returns:
-            Tuple of (empty string for input box, updated history)
         """
         if not self.host:
             await self.initialize_host()
@@ -131,25 +129,53 @@ class WebInterface:
         try:
             # Add user message to history
             history.append({"role": "user", "content": message})
+            yield "", history
             
-            # Process query
-            result = await self.host.process_query(
-                session_id=self.session_id,
-                query=message,
-                token=self.token,
-            )
-            print(result)
+            async for update in self.host.process_query_iterator(
+            session_id=self.session_id,
+            query=message,
+            token=self.token,
+            ):
+            # update sarà un dizionario tipo: {"type": "thought", "content": "..."} 
+            # o {"type": "answer", "content": "..."}
+
+                if update["type"] == "thought":
+                    content = update["content"]
+                    if "⚙️ Esecuzione tool:" in content:
+                        display_html = f"""
+                <div class="thought-box">
+                    <div class="loader-container">
+                        <div class="spinner"></div>
+                        <span>{content}</span>
+                    </div>
+                </div>
+                """
+                    else:
+                        display_html = f"<div class='thought-box'>🧠 {content}</div>"
+
+                    # Se l'ultimo messaggio è già dell'assistente (un pensiero precedente), lo aggiorniamo
+                    if history and history[-1]["role"] == "assistant":
+                        history[-1]["content"] = display_html
+                    else:
+                        history.append({"role": "assistant", "content": display_html})
             
-            # Update history with assistant response
-            history.append({"role": "assistant", "content": result["answer"]})
-            
-            return "", history
+                elif update["type"] == "answer":    
+                    # Quando arriva la risposta finale, sostituiamo il box del pensiero con il testo pulito
+                    if history and history[-1]["role"] == "assistant":
+                        history[-1]["content"] = update["content"]
+                    else:
+                        history.append({"role": "assistant", "content": update["content"]})
+
+                # 3. Ad ogni aggiornamento, Gradio rinfresca la UI
+                yield "", history
+                return
+            yield "", history
             
         except Exception as e:
             logger.error("chat_error", error=str(e))
             error_msg = f"❌ Error: {str(e)}"
             history.append({"role": "assistant", "content": error_msg})
-            return "", history
+            yield "", history
           
     def get_registered_servers(self) -> str:
         """Get list of registered servers as formatted text."""
@@ -395,15 +421,51 @@ interface = WebInterface()
 def create_gradio_interface():
     """Create Gradio web interface."""
     
+    css_style = """
+.thought-box { 
+    color: #555; 
+    background: #f8f9fa; 
+    padding: 10px; 
+    border-radius: 6px; 
+    border-left: 4px solid #007bff; 
+    margin: 5px 0; 
+}
+.loader-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #007bff;
+    font-weight: bold;
+}
+.spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #007bff;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+.shutdown-container { 
+    position: absolute; 
+    top: 15px; 
+    right: 15px; 
+    z-index: 1000; }
+#chatbot { 
+    height: 600px !important; 
+    overflow-y: auto !important; 
+    }
+.server-panel {border: 1px solid #ddd; padding: 15px; border-radius: 8px; margin: 10px 0;}
+"""
+
     with gr.Blocks(
         title="MCP Multi-Server Assistant",
         theme=gr.themes.Soft(),
-        css="""
-        .shutdown-container { position: absolute; top: 15px; right: 15px; z-index: 1000; }
-        #chatbot { height: 600px !important; overflow-y: auto !important; }
-        .server-panel {border: 1px solid #ddd; padding: 15px; border-radius: 8px; margin: 10px 0;}
-        """
-    ) as demo:
+        css=css_style
+        ) as demo:
         
         with gr.Row(elem_classes="shutdown-container"):
             shutdown_btn = gr.Button("🔌 Shutdown", variant="stop", elem_classes="shutdown-container", size="sm")
@@ -446,12 +508,12 @@ def create_gradio_interface():
                 # Gestione Shutdown
                 shutdown_btn.click(fn=interface.shutdown)
 
-                # Chat event handlers
-                async def chat_fn(message, history):
-                    return await interface.chat(message, history)
+                # # Chat event handlers
+                # async def chat_fn(message, history):
+                #     return await interface.chat(message, history)
                 
-                msg.submit(chat_fn, inputs=[msg, chatbot], outputs=[msg, chatbot])
-                submit_btn.click(chat_fn, inputs=[msg, chatbot], outputs=[msg, chatbot])
+                msg.submit(fn=interface.chat, inputs=[msg, chatbot], outputs=[msg, chatbot], queue=True, show_progress="minimal")
+                submit_btn.click(fn=interface.chat, inputs=[msg, chatbot], outputs=[msg, chatbot], queue=True)
             
             # ===== TAB 2: SERVER MANAGEMENT =====
             with gr.Tab("⚙️ Server Management"):
