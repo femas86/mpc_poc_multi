@@ -14,6 +14,7 @@ Features:
 import asyncio
 import json
 import os
+from dotenv import load_dotenv
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
 from datetime import datetime
@@ -34,6 +35,9 @@ from shared.logging_config import setup_logging, get_logger
 
 logger = get_logger(__name__)
 
+# Questo trova il file .env indipendentemente da dove lanci il comando
+env_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 class WebInterface:
     """Web interface for MCP Host with dynamic server management."""
@@ -67,7 +71,7 @@ class WebInterface:
         )
         session_manager = SessionManager(auth_config=auth_config)
         context_manager = ContextManager()
-        ollama_client = OllamaClient()
+        ollama_client = OllamaClient(model=settings.ollama_model)
         auth_middleware = AuthMiddleware(app=None, auth_config=auth_config, session_manager=session_manager)
         
         # Create MCP Host
@@ -93,7 +97,8 @@ class WebInterface:
         # Create context
         await context_manager.create_context(
             session_id=self.session_id,
-            system_message="You are a helpful assistant with access to weather data and graph databases.",
+            system_message= self.host._build_react_system_prompt()
+            # system_message="You are a assistant with access to tools and resources to answer user requests.",
         )
         
         logger.info("mcp_host_initialized")
@@ -114,7 +119,7 @@ class WebInterface:
             import signal
             os.kill(os.getpid(), signal.SIGINT)
         
-    async def chat(self, message: str, history: List[Dict[str, str]]) -> Tuple[str, List[Dict[str, str]]]:
+    async def chat(self, message: str, history: List[Dict[str, str]]):
         """
         Process chat message con streaming dei ragionamenti.
         
@@ -131,25 +136,52 @@ class WebInterface:
         try:
             # Add user message to history
             history.append({"role": "user", "content": message})
-            
-            # Process query
-            result = await self.host.process_query(
+            history.append({"role": "assistant", "content": ""})
+            full_response = ""
+
+            # Iteriamo sui pezzi (Thought, Action, Answer) emessi dal generatore
+            async for step in self.host.process_query(
                 session_id=self.session_id,
                 query=message,
                 token=self.token,
-            )
-            print(result)
-            
-            # Update history with assistant response
-            history.append({"role": "assistant", "content": result["answer"]})
-            
-            return "", history
+            ):
+                if step["type"] == "thought":
+                    print(f"L'IA sta pensando: {step['content']}")
+                    full_response += f"\n\n> <details><summary>💡 **Pensiero:** </summary>{step['content']}</details>\n\n"
+                    # yield full_response
+                    
+                elif step["type"] == "action":
+                    print(f"Eseguo azione: {step['content']}")
+                    full_response += f"⚙️ *Eseguo: {step['content']}...*\n"
+                    # yield full_response
+                    
+                elif step["type"] == "observation":
+                    full_response += "✅ *Dati ricevuti.*\n"
+                    # yield full_response
+                elif step["type"] == "answer":
+                    print(f"Risposta finale: {step['content']}")
+                    full_response += f"\n---\n{step['content']}"
+                    # yield full_response
+                    
+                # Update history with assistant response
+                history[-1]["content"] = full_response
+                # yield history
+                clean_history = [
+                    {"role": str(m["role"]), "content": str(m["content"])} 
+                    for m in history
+                ]
+                yield "", clean_history
+
             
         except Exception as e:
             logger.error("chat_error", error=str(e))
             error_msg = f"❌ Error: {str(e)}"
-            history.append({"role": "assistant", "content": error_msg})
-            return "", history
+            history[-1]["content"] += f"\n\n{error_msg}"
+            clean_history = [
+                {"role": str(m["role"]), "content": str(m["content"])} 
+                for m in history
+            ]
+            yield "", clean_history
           
     def get_registered_servers(self) -> str:
         """Get list of registered servers as formatted text."""
@@ -184,6 +216,27 @@ class WebInterface:
             for tool in tools:
                 lines.append(f"- **{tool.name}**: {tool.description}")
             lines.append("")
+        
+        return "\n".join(lines)
+
+    def get_discovered_resources(self) -> str:
+        """Get list of discovered resources."""
+        if not self.host: #or not self.host.discovered_resources:
+            return "No resources discovered yet."
+        
+        lines = ["# Discovered Resources\n"]
+        
+        by_server = {}
+        for resource_name, resource in self.host.discovered_resources.items():
+            if resource.server_name not in by_server:
+                by_server[resource.server_name] = []
+            by_server[resource.server_name].append(resource)
+
+            for server_name, resources in by_server.items():
+                lines.append(f"## {server_name}")
+                for resource in resources:
+                    lines.append(f"- **{resource.name}**: {resource.description}")
+                lines.append("")
         
         return "\n".join(lines)
     
@@ -446,13 +499,20 @@ def create_gradio_interface():
                 # Gestione Shutdown
                 shutdown_btn.click(fn=interface.shutdown)
 
-                # Chat event handlers
-                async def chat_fn(message, history):
-                    return await interface.chat(message, history)
                 
-                msg.submit(chat_fn, inputs=[msg, chatbot], outputs=[msg, chatbot])
-                submit_btn.click(chat_fn, inputs=[msg, chatbot], outputs=[msg, chatbot])
-            
+                msg.submit(
+                    fn=interface.chat, 
+                    inputs=[msg, chatbot], 
+                    outputs=[msg, chatbot],
+                    scroll_to_output=True
+                )
+
+                submit_btn.click(
+                    fn=interface.chat, 
+                    inputs=[msg, chatbot], 
+                    outputs=[msg, chatbot],
+                    scroll_to_output=True
+                )
             # ===== TAB 2: SERVER MANAGEMENT =====
             with gr.Tab("⚙️ Server Management"):
                 
@@ -590,11 +650,17 @@ def create_gradio_interface():
                 gr.Markdown("---")
                 gr.Markdown("## 📚 Discovered Resources")
                 resources_display = gr.Markdown(value="Resources will appear here")
+                refresh_resources = gr.Button("🔄 Refresh Resources")
+
+                def refresh_resources_fn():
+                    return interface.get_discovered_resources()
                 
                 def refresh_tools_fn():
                     return interface.get_discovered_tools()
                 
+                
                 refresh_tools.click(refresh_tools_fn, outputs=tools_display)
+                refresh_resources.click(refresh_resources_fn, outputs=resources_display)
             
             # ===== TAB 4: STATISTICS =====
             with gr.Tab("📊 Statistics"):
@@ -611,6 +677,7 @@ def create_gradio_interface():
             lambda: (
                 interface.get_registered_servers(),
                 interface.get_discovered_tools(),
+                interface.get_discovered_resources(),
                 interface.get_statistics(),
             ),
             outputs=[registered_display, tools_display, stats_display]
