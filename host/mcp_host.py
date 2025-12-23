@@ -22,8 +22,8 @@ from mcp.client.stdio import stdio_client
 
 from shared.logging_config import get_logger
 from config.settings import get_settings
-from host.ollama_client import OllamaClient, OllamaMessage
-from host.context_manager import ContextManager
+from host.ollama_client import OllamaClient, ToolDefinition
+from host.context_manager import ContextManager, Message
 from host.session_manager import SessionManager
 from host.auth_middleware import AuthMiddleware
 from host.health_checker import HealthChecker
@@ -51,6 +51,9 @@ class DiscoveredTool:
         # Extract required parameters
         self.required_params = input_schema.get("required", [])
         self.properties = input_schema.get("properties", {})
+
+    def get(self, attribute: str, default: str = None) -> Any:
+        return getattr(self, attribute, default)
 
 class DiscoveredResource:
     """Resource discovered from MCP server."""
@@ -127,81 +130,25 @@ class MCPHost:
 
         # ReAct configuration
         self.max_reasoning_steps = 5
-        self.react_system_prompt = self._build_react_system_prompt()
+        #self.react_system_prompt = self._build_react_system_prompt()
         
         logger.info("mcp_host_initialized")
     
     def _build_react_system_prompt(self) -> str:
         """Build system prompt for ReAct reasoning."""
         return """
-    ### ROLE
-    You are a reasoning engine that solves queries by looping through Thought, Action, and Action Input. You have access to a dynamic set of Tools and Resources provided in the user prompt.
-
-    CRITICAL: You MUST follow this EXACT format for EVERY response:
-    1. **Thought**: Analyze the query, the "Available Tools" and "Available Resources" sections below. Plan your next move.
-    2. **Action**: Choose exactly ONE tool name or use "read_resource"
-    3. **Action Input**: Provide arguments in valid JSON format matching the tool's schema.
-
-    **CRITICAL: STOP after writing the Action Input. Do NOT write an "Observation". The system will provide the Observation to you in the next turn.**
-
-    ### EXIT CONDITION
-    If the available information is sufficient:
-    **Final Answer**: [Your complete, helpful response to the user]
-
-    **If you need to use a TOOL:**
-
-    Thought: [explain what you need to do]
-    Action: [exact_tool_name]
-    Action Input: {"arg1": "value1", "arg2": "value2"}
-
-    **To read a RESOURCE (for formatted data):**
-
-    Thought: [explain why you need this data]
-    Action: read_resource
-    Action Input: {"uri": "resource://path/here"}
-
-    ### CRITICAL INSTRUCTIONS:
-    - For weather queries, identify the location FIRST
-    - Use Weather Italy for Italian cities
-    - Use Weather USA for US locations
-    - You can chain multiple tools if needed
-    - Always provide clear, concise final answers
-    - If uncertain about location, ASK for clarification
-
-    ### RULES:
-
-    - NEVER fabricate data. Only use what is provided in an "Observation:".
-    - NEVER fabricate tools or resource, use only available.
-    - You can only perform ONE action per turn.
-    - Action Input MUST be a valid JSON object.
-    - If a location is ambiguous, use "Thought:" to explain why and then "Final Answer:" to ask the user for clarity.
-    - If the user says "Hello" or "Hi", respond with "Final Answer:". Do NOT call a tool.
-    - If no action can help, use "Final Answer:" to explain why
-    - CRITICAL: If you receive an error from a tool, DO NOT invent tools. Use "Final Answer:" to inform the user the service is unavailable.
-
-"""
-#  esempi rimossi dal prompt qui sopra per rimpicciolire la finestra di contesto del modello utilizzata per il system prompt
-#  EXAMPLE (resource use):
-    # User: "What's the weather in Rome?"
-    # Thought: I need to get formatted weather data for Rome, Italy. I should use the Italian city weather resource.
-    # Action: read_resource
-    # Action Input: {"uri": "weather://italy/current/Rome"}
-    # [STOP]
-# 
-    # EXAMPLE (Chained tool use):
-    # User: "Is it warmer in Florence or in San Francisco today"
-    # Thought: I need to get weather data for Rome, Italy, and for San Francisco, CA, USA. I should use the both the Italian weather and the USA Weather tool, and compare results.
-    # Action: get_weather_italy
-    # Action Input: {"city_name": "Roma", "forecast_days": 1, "include_hourly": false}
-    # Action: get_weather_usa
-    # Action Input: {"city_name": "San Francisco", "forecast_days": 1, "include_hourly": false}
-    # Observation: The weather in Rome today is 75°F and sunny. The weather in San Francisco today is 65°F and cloudy.
-    # Thought: I have the weather data for both cities. Now I need to compare the temperatures and provide the answer.
-# 
-    # EXAMPLE (Final Answer):
-    # Observation: {"temp": "12°C", "condition": "Rain"}
-    # Thought: I now have the weather data for Venice. I can provide the final answer.
-    # Final Answer: The current weather in Venice is 12°C with rain.
+You are a ReAct multi-tool assistant. When receive a query, think about the tools you have at disposal and USE them.
+You operate in a Thought -> Action -> Observation loop. For every step, first explain your reasoning (Thought). 
+Then, if you NEED data, call a tool (Action). BE DECISIVE, CALL IT. After receiving the data (Observation), analyze it and decide if you have the final answer or if you need another tool.
+RULES:
+1. To provide weather information, you MUST have coordinates (lat/lon).
+2. If the user provides a city or a State name, FIRST use the geolocation correct tool.
+   - For Italy: use 'search_italy_location'
+   - For USA: use 'search_us_location'
+3. AFTER receiving the coordinates, USE the relative weather tool.
+5. If a tool returns an error, inform the user clearly. NEVER INVENT answers
+6. If you decide an action is needed, you MUST provide the tool call in the same turn. Do not just say you will do it.
+        """
     
     def auto_register_servers(self, servers_dir: Optional[Path] = None):
         """
@@ -317,36 +264,6 @@ class MCPHost:
         
         logger.info("mcp_host_stopped")
     
-    def extract_json_robust(text: str) -> dict:
-        """
-        Finds the first JSON-like object in a string and attempts to parse it.
-        Useful for small models that 'leak' prose before or after JSON.
-        """
-        try:
-            # Regex to find everything between the first '{' and the last '}'
-            match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
-            if not match:
-                raise ValueError("No JSON object found in LLM output")
-                
-            json_str = match.group(0)
-            
-            # Clean up potential common LLM formatting issues
-            json_str = json_str.replace("```json", "").replace("```", "").strip()
-            
-            return json.loads(json_str)
-        
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse extracted JSON: {e}")
-            # Fallback: if the model leaked text AFTER the JSON, 
-            # try to find the last valid '}' and cut there.
-            try:
-                last_bracket = json_str.rfind('}')
-                if last_bracket != -1:
-                    return json.loads(json_str[:last_bracket + 1])
-            except:
-                pass
-            raise
-
     def register_server(self, config: ServerConfig):
         """Register an MCP server configuration."""
         if not isinstance(config, ServerConfig):
@@ -432,7 +349,7 @@ class MCPHost:
         session_id: str,
         query: str,
         token: Optional[str] = None,
-    ) -> dict[str, Any]:
+    ) :
         """
         Process user query with ReAct reasoning.
         
@@ -454,260 +371,138 @@ class MCPHost:
                     token=token,
                 )
             except Exception as e:
-                return {"error": f"Authentication failed: {e}"}
+                yield {"type":"error", "content": f"Authentication failed: {e}"}
+                return
         
         # Add query to context
         await self.context_manager.add_message(
             session_id=session_id,
             role="user",
             content=query,
+            tool_calls= None
         )
         
-        # Execute ReAct loop
-        react_steps: list[ReActStep] = []
-        final_answer = None
+        available_tools = self._convert_to_ollama_tools()
         
         for step_num in range(1, self.max_reasoning_steps + 1):
             logger.debug("react_step", step=step_num, session=session_id)
             
-            # Get reasoning from LLM
-            step = await self._reasoning_step(session_id, query, react_steps)
-            react_steps.append(step)
-            
-            # Check if we have final answer
-            if step.thought.startswith("Final Answer:"):
-                final_answer = step.thought.replace("Final Answer:", "").strip()
-                logger.info("final_answer_reached", step=step_num)
-                break
+            response = await self.ollama_client.chat(
+                messages= await self.context_manager.get_messages_for_llm(session_id),
+                tools= available_tools,
+                temperature=0.0,
+                max_tokens=1000,
+            )
 
-            # Execute action if specified
+            thought = response.content
+            if thought:
+                logger.info(f"Step {step_num} - Thought: {thought}")
+                yield {"type": "thought", "content": thought, "step": step_num}
 
-            if step.action and step.action_input:
-                if step.action not in self.discovered_tools:
-                    # Look for a close match
-                    close_matches = difflib.get_close_matches(step.action, list(self.discovered_tools.keys()), n=1, cutoff=0.6)
-                    if close_matches:
-                        suggested = close_matches[0]
-                        logger.warning(f"Fuzzy matching '{step.action}' to '{suggested}'")
-                        step.observation = f"Note: '{step.action}' not found. Did you mean '{suggested}'?"
-                    else:
-                        logger.error(
-                            "tool_not_found_in_discovered",
-                            tool=step.action,
-                            available=list(self.discovered_tools.keys()),
-                        )
-                        step.observation = (
-                            f"Error: Tool '{step.action}' not found."
-                            f"Available tools: {', '.join(list(self.discovered_tools.keys()))}"
-                        )
-                else:
-                    logger.info("executing_tool", tool=step.action, input=step.action_input)
-                    observation = await self._execute_action(
-                        session_id=session_id,
-                        action=step.action,
-                        action_input=step.action_input,
-                    )
-                    step.observation = observation
-                    logger.debug("tool_result_received", length=len(observation))
+            if response.tool_calls:
+                # Aggiungiamo alla history il pensiero + l'intenzione di agire
+                await self.context_manager.add_message(
+                    session_id=session_id,
+                    role="assistant", 
+                    content=thought, 
+                    tool_calls=response.tool_calls
+                )
+
+                for t_call in response.tool_calls:
+                    action_name = t_call['function']['name']
+                    action_input = t_call['function']['arguments']
+                    
+                    yield {"type": "action", "content": action_name, "input": action_input}
+                    
+                    # --- [3. OBSERVATION] ---
+                    observation = await self._execute_mcp_tool(action_name, action_input)
+                    logger.info(f"Step {step_num} - Observation: {observation}")
+                    yield {"type": "observation", "content": str(observation)}
+
+                    # Aggiungiamo l'osservazione alla history per il prossimo Thought
+                    await self.context_manager.add_message(Message(
+                        role="tool",
+                        name=action_name,
+                        content=str(observation),
+                        tool_calls= response.tool_calls
+                    ))
+                
+                continue # Torna a pensare basandosi sull'osservazione
             else:
-                logger.warning("no_action_parsed", thought=step.thought[:100])
-        
-        # If no final answer after max steps, synthesize one
-        if not final_answer:
-            logger.warning("max_steps_reached_synthesizing")
-            final_answer = await self._synthesize_answer(session_id, react_steps)
-        
-        # Add response to context
-        await self.context_manager.add_message(
-            session_id=session_id,
-            role="assistant",
-            content=final_answer,
-        )
-        
-        logger.info("query_completed", session_id=session_id, steps=len(react_steps))
-        
-        return {
-            "answer": final_answer,
-            "reasoning_steps": [
-                {
-                    "step": s.step_num,
-                    "thought": s.thought,
-                    "action": s.action,
-                    "action_input": s.action_input,
-                    "observation": s.observation[:500] if s.observation else None,  # Truncate
-                }
-                for s in react_steps
-            ],
-            "session_id": session_id,
-        }
-    
-    async def _reasoning_step(
-        self,
-        session_id: str,
-        original_query: str,
-        previous_steps: list[ReActStep],
-    ) -> ReActStep:
-        """Execute one ReAct reasoning step."""
-        
-        # Build context from previous steps
-        context_parts = []
-
-        if previous_steps:
-            context_parts.append("Previous Steps:")
-            for step in previous_steps:
-                context_parts.append(f"\nStep {step.step_num}:")
-                context_parts.append(f"Thought: {step.thought}")
-                if step.action:
-                    context_parts.append(f"Action: {step.action}")
-                    context_parts.append(f"Action Input: {json.dumps(step.action_input)}")
-                if step.observation:
-                    # Truncate long observations
-                    obs_preview = step.observation[:500]
-                    context_parts.append(f"Observation: {obs_preview}")
-
-        # Build prompt
-        tools_desc = await self._get_tools_description()
-        resources_desc = await self._get_resources_description()
-        #prompts_desc = await self._get_mcp_prompts_description() # TODO Optional: MCP Prompts
-
-        if previous_steps:
-            prompt = f"""Question: {original_query}
-{chr(10).join(context_parts)}
-
-{tools_desc}
-{resources_desc}
-
-Based on the observations, tools and resources above, what should you do next?
-Remember: Start with "Thought:" or "Final Answer:" 
-"""
-        else:
-            prompt = f"""Question: {original_query}
-What is your first step?
-{tools_desc}
-{resources_desc}
-Based on the query and the available tools and resources, what should you do next?
-Remember: Start with "Thought:" and then specify Action and Action Input."""
-        
-        # Get LLM response
-        messages = [
-            OllamaMessage(role="system", content=self.react_system_prompt),
-            OllamaMessage(role="user", content=prompt),
-        ]
-        logger.debug("calling_llm", prompt_length=len(prompt))
-        response = await self.ollama_client.chat(
-            messages=messages,
-            temperature=0.1,
-            max_tokens=500  # Lower temperature for more focused reasoning
-        )
-        
-        # Se il contenuto non contiene 'Action:', allora è probabilmente una risposta finale
-        if "Action:" not in response.content and "Final Answer:" not in response.content:
-            # Se il 1B è confuso, forziamo noi la chiusura
-            return response.content
-
-        if "Final Answer:" in response.content:
-            return response.content.split("Final Answer:")[-1].strip()
-
-        # Parse response
-        step = self._parse_reasoning_response(
-            step_num=len(previous_steps) + 1,
-            response_text=response.content,
-        )
-        
-        return step
-    
-    def _parse_reasoning_response(self, step_num: int, response_text: str) -> ReActStep:
-        """Parse LLM response into ReActStep."""
-
-        logger.debug("parsing_response", text=response_text)
-        # Clean response
-        text = response_text.strip()
-        
-        thought = ""
-        action = None
-        action_input = None
-        
-        # Check for Final Answer first
-
-        if "Final Answer:" in text:
-            thought = text
-            return ReActStep(step_num=step_num, thought=thought)
-
-        # Split by lines
-        lines = text.split("\n")
-
-        current_section = None
-        action_input_lines=[]
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            # Remove markdown formatting
-            line = line.replace("**", "")
-            if line.startswith("Thought:"):
-                current_section = "thought"
-                thought = line.replace("Thought:", "").strip()
-            elif line.startswith("Action:"):
-                current_section = "action"
-                action_text = line.replace("Action:", "").strip()
-                # Clean action name
-                action = action_text.split()[0] if action_text else None
-            elif line.startswith("Action Input:"):
-                current_section = "action_input"
-                input_text = line.replace("Action Input:", "").strip()
-                action_input_lines.append(input_text)
-            elif current_section == "thought" and not any(line.startswith(x) for x in ["Action:", "Final", "Observation:"]):
-                thought += " " + line
-            elif current_section == "action_input" and not any(line.startswith(x) for x in ["Thought:", "Final", "Observation:"]):
-                action_input_lines.append(line)
-        # Parse action input
-        if action_input_lines:
-            input_text = " ".join(action_input_lines)
-            # try:
-            #     # Try to extract JSON
-            #     if "{" in input_text and "}" in input_text:
-            #         json_start = input_text.index("{")
-            #         json_end = input_text.rindex("}") + 1
-            #         json_str = input_text[json_start:json_end]
-            #         action_input = json.loads(json_str)
-            #         logger.debug("parsed_action_input", input=action_input)
-            #     else:
-            #         # Fallback: create simple dict
-            #         action_input = {"query": input_text}
-            # except json.JSONDecodeError as e:
-            #     logger.warning("json_parse_failed", error=str(e), text=input_text[:100])
-            #     action_input = {"raw": input_text}
-            try:
-                # Use a more aggressive "First-Match" approach
-                match = re.search(r'(\{.*?\})', input_text, re.DOTALL) # The '?' makes it non-greedy
-                if match:
-                    json_str = match.group(1)
-                    action_input = json.loads(json_str)
+                if thought:
+                    # Add response to context
+                    await self.context_manager.add_message(
+                        session_id=session_id,
+                        role="assistant",
+                        content=thought,
+                        tool_calls=response.tool_calls
+                    )
+                    
+                    logger.info("query_completed", session_id=session_id, steps=step_num)
+                    yield {"type":"answer", "content": thought}
+                    return
                 else:
-                    action_input = {"query": input_text}
-            except json.JSONDecodeError:
-                # Fallback to your rindex logic if the non-greedy match fails
-                try:
-                    json_start = input_text.index("{")
-                    json_end = input_text.rindex("}") + 1
-                    action_input = json.loads(input_text[json_start:json_end])
-                except:
-                    action_input = {"raw": input_text}
-        logger.info(
-            "step_parsed",
-            thought_length=len(thought),
-            action=action,
-            has_input=bool(action_input),
-        )
+                    await self.context_manager.add_message(
+                        session_id=session_id,
+                        role="assistant",
+                        content="error",
+                        tool_calls= response.tool_calls or None
+                    )
+                    yield {"type":"error", "content": "il modello non ha prodotto una risposta"}
+                    return
         
-        return ReActStep(
-            step_num=step_num,
-            thought=thought,
-            action=action,
-            action_input=action_input,
-        )
-    
+    def _convert_to_ollama_tools(self) -> list:
+        """
+        Converte i tool scoperti dai server MCP nel formato JSON Schema 
+        richiesto dall'API 'tools' di Ollama.
+        """
+        ollama_tools = []
+        
+        # self.discovered_tools è il dizionario dove hai salvato i tool dei server
+        # Ogni tool MCP ha tipicamente: 'name', 'description', 'inputSchema'
+        for name, tool in self.discovered_tools.items():
+            # Costruiamo la struttura richiesta da Ollama/OpenAI standard
+            schema = tool.get('input_schema', {})
+            props = schema.get('properties', {})
+            required = schema.get('required', [])
+            tool_definition = ToolDefinition(
+                type = "function",
+                function = {
+                    'name': name,
+                    'description': tool.get('description', 'Nessuna descrizione fornita').strip(),
+                    'parameters': {
+                        'type': 'object',
+                        'properties': props,
+                        'required': required
+                    }
+                },
+            )
+            
+            ollama_tools.append(tool_definition)
+        
+        # Lo standard Ollama Tool Calling non ha un concetto nativo di "Resources". Per loro esiste solo Chat e Tools. Aggiungiamo le risorse come un tool speciale
+        if self.discovered_resources: # Se ci sono mcp.resources
+            ollama_tools.append(ToolDefinition(
+                type = "function",
+                function = {
+                    'name': 'read_resource',
+                    'description': 'Leggi il contenuto di una risorsa specifica (file, log, dati statici).',
+                    'parameters': {
+                        'type': 'object',
+                        'properties': {
+                            'uri': {
+                                'type': 'string',
+                                'description': 'URI della risorsa da leggere',
+                                'enum': list(self.discovered_resources.keys()) # Opzionale: limita ai soli URI esistenti
+                            }
+                        },
+                        'required': ['uri']
+                    }
+                }
+            ))
+
+        return ollama_tools
+
     async def _execute_action(
         self,
         session_id: str,

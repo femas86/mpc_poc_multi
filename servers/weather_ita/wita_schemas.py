@@ -9,7 +9,7 @@ class LocationInfo(BaseModel):
     """Geographic location information."""
     
     name: str = Field(..., description="Location name")
-    country: str = Field(..., description="Country code")
+    country: Optional[str] = Field(..., description="Country code")
     admin1: Optional[str] = Field(None, description="Administrative area level 1 (region)")
     admin2: Optional[str] = Field(None, description="Administrative area level 2 (province)")
     latitude: float = Field(..., description="Latitude")

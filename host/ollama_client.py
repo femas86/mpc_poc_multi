@@ -1,7 +1,7 @@
 """Ollama client for LLM interaction with full streaming and function calling support."""
 
-from ollama import AsyncClient as oaClient, ChatResponse, chat as Ochat
-
+from ollama import AsyncClient as oaClient, ChatResponse
+from dataclasses import dataclass, asdict
 from typing import Dict, List, Any, AsyncIterator, Optional
 import json
 
@@ -12,27 +12,10 @@ from pydantic import BaseModel, Field
 from config.settings import get_settings
 from shared.logging_config import get_logger
 from shared.utils import retry_async
+from host.context_manager import ContextManager, Message
+
 
 logger = get_logger(__name__)
-
-class OllamaMessage(BaseModel):
-    """Message structure for Ollama chat."""
-
-    role: str = Field(..., description="Message role: system, user, or assistant")
-    content: str = Field(..., description="Message content")
-    images: Optional[list[str]] = Field(default=None, description="Optional image data")
-
-class OllamaResponse(BaseModel):
-    """Structured response from Ollama."""
-
-    content: str = Field(..., description="Response content")
-    model: str = Field(..., description="Model used")
-    done: bool = Field(..., description="Whether generation is complete")
-    total_duration: Optional[int] = Field(default=None, description="Total duration in nanoseconds")
-    load_duration: Optional[int] = Field(default=None, description="Load duration in nanoseconds")
-    prompt_eval_count: Optional[int] = Field(default=None, description="Number of tokens in prompt")
-    eval_count: Optional[int] = Field(default=None, description="Number of tokens generated")
-    eval_duration: Optional[int] = Field(default=None, description="Evaluation duration in nanoseconds")
 
 class ToolDefinition(BaseModel):
     """Tool definition for function calling."""
@@ -40,6 +23,18 @@ class ToolDefinition(BaseModel):
     type: str = Field(default="function", description="Tool type")
     function: dict[str, Any] = Field(..., description="Function specification")
 
+class OllamaResponse(BaseModel):
+    """Structured response from Ollama."""
+
+    content: str = Field(..., description="Response content")
+    model: str = Field(..., description="Model used")
+    tool_calls: Optional[list[ToolDefinition]] = Field(default=None, description="Tool call details")
+    done: bool = Field(..., description="Whether generation is complete")
+    total_duration: Optional[int] = Field(default=None, description="Total duration in nanoseconds")
+    load_duration: Optional[int] = Field(default=None, description="Load duration in nanoseconds")
+    prompt_eval_count: Optional[int] = Field(default=None, description="Number of tokens in prompt")
+    eval_count: Optional[int] = Field(default=None, description="Number of tokens generated")
+    eval_duration: Optional[int] = Field(default=None, description="Evaluation duration in nanoseconds")
 
 class OllamaClient:
     """Client asincrono per interagire con Ollama locale
@@ -82,10 +77,10 @@ class OllamaClient:
     @retry_async(max_attempts=3, delay=1.0, backoff=2.0)
     async def chat(
         self,
-        messages: list[OllamaMessage],
+        messages: list[Message],
         tools: Optional[list[ToolDefinition]] = None,
         stream: bool = False,
-        temperature: float = 0.2,
+        temperature: float = 0.0,
         max_tokens: Optional[int] = None,
     ) -> OllamaResponse | AsyncIterator[str]:
         """
@@ -105,27 +100,29 @@ class OllamaClient:
             RuntimeError: If Ollama request fails
         """
         
-        # 1. TRIMMING: Mantieni il System Prompt + solo gli ultimi 3 messaggi
-        # Questo evita che il modello "impazzisca" leggendo troppi errori passati
-        if len(messages) > 4:
-            system_msg = messages[0] # Il primo è sempre il System Prompt
-            last_messages = messages[-3:] # Gli ultimi 3 scambi
-            messages = [system_msg] + last_messages
         try:
             # Convert messages to dict format
-            message_dicts = [msg.model_dump(exclude_none=True) for msg in messages]
+            message_dicts = []
+            for msg in messages:
+                if hasattr(msg, "model_dump"):
+                    # È un oggetto Pydantic (OllamaMessage)
+                    message_dicts.append(msg.model_dump(include={'role', 'content', 'name', 'tool_calls'}, exclude_none=True))
+                elif isinstance(msg, dict):
+                    # È già un dizionario
+                    message_dicts.append(msg)
+                else:
+                    # Fallback estremo per altri tipi di oggetti
+                    message_dicts.append({"role": getattr(msg, "role", "user"), "content": getattr(msg, "content", ""), 
+                                         "name": getattr(msg, "name", None), 'tool_calls': getattr(msg, "tool_calls", None)})
             
+            tool_dict= None
+            if tools:
+                tool_dict = [t.model_dump() if isinstance(t, ToolDefinition) else t for t in tools]
+
             # Prepare request options
             options: dict[str, Any] = {
                 "temperature": temperature,
                 "num_predict": max_tokens or 512,
-                "stop": [
-                    "Observation:",         # Fondamentale: ferma l'LLM dopo l'azione
-                    "User:",                # Evita che l'LLM simuli l'utente
-                    "Thought: Observation:", # Cattura loop comuni
-                    "\n\n",
-                    "\n"
-                ],
                 "num_ctx": 4096,            # Focalizza l'attenzione su una finestra gestibile
             }
 
@@ -149,35 +146,37 @@ class OllamaClient:
                 "options": options,
             }
             
-            if tools:
-                request_params["tools"] = [tool.model_dump() for tool in tools]
+            if tool_dict:
+                request_params["tools"] = tool_dict
+
+            
+            if tool_dict:
+                logger.info("DEBUG_TOOLS_SENT", count=len(tool_dict), names=[t['function']['name'] for t in tool_dict])
+            else:
+                logger.warning("DEBUG_NO_TOOLS_SENT_TO_OLLAMA")
 
             response: ChatResponse = await self.client.chat(**request_params)
             
-            # Extract response content
-            content = ""
-            if hasattr(response, "message") and hasattr(response.message, "content"):
-                content = response.message.content
-            elif isinstance(response, dict) and "message" in response:
-                content = response["message"].get("content", "")
-
-            content = content.strip()
-            if "Observation:" in content:
-                content = content.split("Observation:")[0].strip()
-            if content.count("Thought:") > 1:
-                content = "Thought:" + content.split("Thought:")[1].split("Thought:")[0]
-
+            resp_msg = getattr(response, "message", response.get("message", {}))
+            content = getattr(resp_msg, "content", resp_msg.get("content", ""))
+            t_calls = getattr(resp_msg, "tool_calls", resp_msg.get("tool_calls", None))
+            
+            final_tool_calls = None
+            if t_calls:
+                final_tool_calls = [tc if isinstance(tc, dict) else tc.model_dump() for tc in t_calls]
+            
             ollama_response = OllamaResponse(
-                content=content,
+                content=content.strip(),
+                tool_calls=final_tool_calls,
                 model=self.model,
                 done=True,
                 total_duration=getattr(response, "total_duration", None),
                 load_duration=getattr(response, "load_duration", None),
                 prompt_eval_count=getattr(response, "prompt_eval_count", None),
-                eval_count=getattr(response, "eval_count", None),
+                eval_count=getattr(response, "eval_count", None,),
                 eval_duration=getattr(response, "eval_duration", None),
-            )
-
+            )                    
+                        
             logger.info(
                 "ollama_chat_completed",
                 model=self.model,
@@ -234,33 +233,6 @@ class OllamaClient:
             logger.error("ollama_stream_error", error=str(e))
             raise RuntimeError(f"Ollama streaming failed: {e}") from e
 
-    async def generate_embedding(self, text: str) -> list[float]:
-        """
-        Generate embeddings for text.
-
-        Args:
-            text: Text to embed
-
-        Returns:
-            List of embedding values
-
-        Raises:
-            RuntimeError: If embedding generation fails
-        """
-        try:
-            response = await self.client.embeddings(model=self.model, prompt=text)
-            
-            if hasattr(response, "embedding"):
-                return response.embedding
-            elif isinstance(response, dict) and "embedding" in response:
-                return response["embedding"]
-            else:
-                raise RuntimeError("Invalid embedding response format")
-
-        except Exception as e:
-            logger.error("ollama_embedding_error", error=str(e))
-            raise RuntimeError(f"Embedding generation failed: {e}") from e
-
     async def check_health(self) -> bool:
         """
         Check if Ollama server is healthy.
@@ -276,24 +248,6 @@ class OllamaClient:
         except Exception as e:
             logger.warning("ollama_health_check_failed", error=str(e))
             return False
-
-    async def list_models(self) -> list[str]:
-        """
-        List available models on Ollama server.
-
-        Returns:
-            List of model names
-        """
-        try:
-            response = await self.client.list()
-            if hasattr(response, "models"):
-                return [model.model for model in response.models]
-            elif isinstance(response, dict) and "models" in response:
-                return [model["model"] for model in response["models"]]
-            return []
-        except Exception as e:
-            logger.error("ollama_list_models_error", error=str(e))
-            return []
 
     """2 metodi della versione vecchia da stabilire se servono o no"""
 

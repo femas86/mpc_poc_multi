@@ -23,13 +23,12 @@ weather_client = OpenMeteoClient()
 @mcp.tool()
 async def search_italian_city(city_name: str, ctx: Context[ServerSession, None]) -> dict[str, Any]:
     """
-    Search for Italian cities by name.
-    
+    MANDATORY FIRST STEP for any weather request in Italy.
+    Use this to validate the city name and obtain its official coordinates (latitude/longitude).
     Args:
-        city_name: Name of the city to search (e.g., "Roma", "Milano", "Firenze")
-        
+        city_name: The name of the Italian city to find (e.g., "Firenze").  
     Returns:
-        List of matching locations with coordinates
+        Exact location data including coordinates. REQUIRED before calling get_weather_italy.
     """
     await ctx.info(f"Searching for Italian city: {city_name}")
     try:
@@ -68,53 +67,41 @@ async def search_italian_city(city_name: str, ctx: Context[ServerSession, None])
 
 @mcp.tool()
 async def get_weather_italy(
-    city_name: str,
+    latitude: float,
+    longitude: float,
+    city_name: str, # Opzionale, solo per log/display
     forecast_days: int = 7,
     include_hourly: bool = False,
     ctx: Context[ServerSession, None] = None,
 ) -> dict[str, Any]:
     """
-    Get weather forecast for an Italian city.
-    
+    Get real-time weather forecast for an Italian location using coordinates.
+    DO NOT guess coordinates. Get them from 'search_italian_city' first.
     Args:
-        city_name: Italian city name (e.g., "Roma", "Milano")
-        forecast_days: Number of days to forecast (1-16)
-        include_hourly: Include hourly forecast
-        
+        latitude: Latitude obtained from search_italian_city.
+        longitude: Longitude obtained from search_italian_city.
+        city_name: Name of the city (for display purposes).
+        forecast_days: Number of days to forecast (1-16).
     Returns:
         Complete weather forecast with current conditions and daily/hourly forecasts
     """
     await ctx.info(f"Getting weather for {city_name}, Italy")
     
     try:
-        # First, geocode the city
-        await ctx.debug("Searching for city location...")
-        locations = await geocoding_client.search_location(city_name, count=1)
-        italian_locs = [loc for loc in locations if loc.country == "IT"]
-        
-        if not italian_locs:
-            return {
-                "success": False,
-                "error": f"Italian city '{city_name}' not found",
-            }
-        
-        location = italian_locs[0]
-        await ctx.info(f"Found: {location.name}, {location.admin1}")
-        
         # Get weather forecast
         await ctx.debug("Fetching weather data...")
         weather_data = await weather_client.get_forecast(
-            latitude=location.latitude,
-            longitude=location.longitude,
+            latitude=latitude,
+            longitude=longitude,
             forecast_days=forecast_days,
             include_hourly=include_hourly,
         )
         
         # Parse forecast
-        forecast = weather_client.parse_forecast(weather_data, location)
+        forecast = weather_client.parse_forecast(weather_data, LocationInfo(name=city_name, latitude=latitude, longitude=longitude))
         
-        await ctx.info(f"Weather forecast retrieved for {location.name}")
-        return forecast.model_dump()
+        await ctx.info(f"Weather forecast retrieved for {city_name}")
+        return forecast.model_dump(exclude_none=True)
         
     except Exception as e:
         await ctx.error(f"Weather retrieval failed: {str(e)}")
@@ -124,7 +111,7 @@ async def get_weather_italy(
 @mcp.resource("weather://italy/current/{city}")
 async def current_weather_resource(city: str) -> str:
     """
-    Resource endpoint for current weather in Italian city.
+    Get instant current weather in Italian city.
     
     Args:
         city: Italian city name
