@@ -352,12 +352,10 @@ RULES:
     ) :
         """
         Process user query with ReAct reasoning.
-        
         Args:
             session_id: Session identifier
             query: User query
-            token: Optional auth token
-            
+            token: Optional auth token 
         Returns:
             Query result with reasoning trace
         """
@@ -405,7 +403,8 @@ RULES:
                     session_id=session_id,
                     role="assistant", 
                     content=thought, 
-                    tool_calls=response.tool_calls
+                    tool_calls= [tc.model_dump() if hasattr(tc, "model_dump") else dict(tc) 
+                                for tc in response.tool_calls]
                 )
 
                 for t_call in response.tool_calls:
@@ -424,7 +423,8 @@ RULES:
                         role="tool",
                         name=action_name,
                         content=str(observation),
-                        tool_calls= response.tool_calls
+                        tool_calls= [tc.model_dump() if hasattr(tc, "model_dump") else dict(tc) 
+                                for tc in response.tool_calls]
                     ))
                 
                 continue # Torna a pensare basandosi sull'osservazione
@@ -435,7 +435,8 @@ RULES:
                         session_id=session_id,
                         role="assistant",
                         content=thought,
-                        tool_calls=response.tool_calls
+                        tool_calls=[tc.model_dump() if hasattr(tc, "model_dump") else dict(tc) 
+                                for tc in response.tool_calls]
                     )
                     
                     logger.info("query_completed", session_id=session_id, steps=step_num)
@@ -446,7 +447,8 @@ RULES:
                         session_id=session_id,
                         role="assistant",
                         content="error",
-                        tool_calls= response.tool_calls or None
+                        tool_calls= [tc.model_dump() if hasattr(tc, "model_dump") else dict(tc) 
+                                for tc in response.tool_calls] or None
                     )
                     yield {"type":"error", "content": "il modello non ha prodotto una risposta"}
                     return
