@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # Ollama Configuration
     ollama_host: str = Field(default="http://localhost:11434")
-    ollama_model: str = Field(default="llama3.2:1b")
+    ollama_model: str = Field(default="functiongemma")
     ollama_timeout: int = Field(default=120, ge=10, le=600)
 
     # Authentication

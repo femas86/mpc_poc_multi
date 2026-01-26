@@ -3,7 +3,7 @@
 import asyncio
 from collections import deque
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, Dict, List
 
 from pydantic import BaseModel, Field
 
@@ -52,6 +52,8 @@ class Message(BaseModel):
 
     role: str = Field(..., description="Message role: system, user, assistant, or tool")
     content: str = Field(..., description="Message content")
+    name: Optional[str] = None #Obbligatorio per il ruolo 'tool'
+    tool_calls: Optional[List[Dict[str, Any]]] = None
     timestamp: datetime = Field(default_factory=datetime.now)
     metadata: dict[str, Any] = Field(default_factory=dict)
     token_count: Optional[int] = Field(default=None, description="Approximate token count")
@@ -164,6 +166,7 @@ class ContextManager:
         session_id: str,
         role: str,
         content: str,
+        tool_calls: Optional[List[Dict[str, Any]]],
         metadata: Optional[dict[str, Any]] = None,
     ) -> ConversationContext:
         """
@@ -190,6 +193,7 @@ class ContextManager:
                 role=role,
                 content=content,
                 token_count=self._estimate_tokens(content),
+                tool_calls=tool_calls or None,
                 metadata=metadata or {},
             )
             
@@ -204,6 +208,7 @@ class ContextManager:
                 "message_added",
                 session_id=session_id,
                 role=role,
+                tool_calls=tool_calls or None,
                 content_length=len(content),
                 total_tokens=context.total_tokens,
                 message_count=len(context.messages),
@@ -255,7 +260,7 @@ class ContextManager:
             total_tokens=context.total_tokens,
         )
 
-    async def get_messages_for_llm(self, session_id: str) -> list[dict[str, str]]:
+    async def get_messages_for_llm(self, session_id: str) -> list[Message]:
         """
         Get messages formatted for LLM consumption.
 
@@ -273,7 +278,13 @@ class ContextManager:
             raise ValueError(f"Context not found for session: {session_id}")
         
         return [
-            {"role": msg.role, "content": msg.content}
+            Message(
+                role=msg.role,
+                content=msg.content,
+                timestamp=msg.timestamp,
+                metadata=msg.metadata,
+                token_count=msg.token_count,
+            )
             for msg in context.messages
         ]
 
